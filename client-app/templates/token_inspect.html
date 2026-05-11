@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Token Inspector — OAuth2 Demo{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted small">
+    <i class="bi bi-arrow-left me-1"></i>Back to home
+  </a>
+</div>
+
+<h4 class="section-title mb-4">
+  <i class="bi bi-search text-primary me-2"></i>JWT Token Inspector
+  <span class="badge bg-secondary ms-2 fs-6">{{ flow | replace('_',' ') | title }}</span>
+</h4>
+
+{# ── JWT visual representation ─────────────────────────────────────────────── #}
+<div class="card shadow-sm mb-4">
+  <div class="card-header fw-semibold">Access Token — Raw JWT</div>
+  <div class="card-body">
+    <p class="text-muted small mb-2">
+      A JWT has three Base64URL-encoded sections separated by dots:
+      <span class="jwt-header fw-semibold">Header</span> •
+      <span class="jwt-payload fw-semibold">Payload</span> •
+      <span class="jwt-signature fw-semibold">Signature</span>
+    </p>
+    {% if access_token_info and access_token_info.raw_parts %}
+    <div class="code-box" style="font-size:.72rem; line-height:1.7">
+      <span class="jwt-header">{{ access_token_info.raw_parts[0] }}</span><span class="text-white">.</span><span class="jwt-payload">{{ access_token_info.raw_parts[1] }}</span><span class="text-white">.</span><span class="jwt-signature">{{ access_token_info.raw_parts[2][:40] }}…</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row g-4">
+
+{# ── Header + Payload ─────────────────────────────────────────────────────── #}
+<div class="col-lg-6">
+  {% if access_token_info %}
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-header">
+      <span class="jwt-header fw-semibold">Header</span>
+      <span class="text-muted small ms-2">— algorithm &amp; key metadata</span>
+    </div>
+    <div class="card-body">
+      <pre class="json-block">{{ access_token_info.header | tojson(indent=2) }}</pre>
+      <table class="table table-sm table-borderless small mt-2 mb-0">
+        <tr>
+          <td class="text-muted" style="width:60px"><code>alg</code></td>
+          <td>Signature algorithm (<strong>RS256</strong> = RSA + SHA-256)</td>
+        </tr>
+        <tr>
+          <td class="text-muted"><code>typ</code></td>
+          <td>Token type — always <strong>JWT</strong></td>
+        </tr>
+        <tr>
+          <td class="text-muted"><code>kid</code></td>
+          <td>Key ID — selects the correct public key from Keycloak's JWKS endpoint</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-header">
+      <span class="jwt-payload fw-semibold">Payload</span>
+      <span class="text-muted small ms-2">— decoded claims</span>
+    </div>
+    <div class="card-body">
+      <pre class="json-block" style="font-size:.72rem">{{ access_token_info.payload | tojson(indent=2) }}</pre>
+    </div>
+  </div>
+
+  {% endif %}
+</div>
+
+{# ── Claim glossary ─────────────────────────────────────────────────────────── #}
+<div class="col-lg-6">
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-header fw-semibold">Claim Glossary</div>
+    <div class="card-body p-0">
+      <table class="table table-sm table-borderless small mb-0">
+        <tbody>
+          {% set claims = [
+            ("sub",          "Subject — unique, permanent user ID (UUID)"),
+            ("iss",          "Issuer — Keycloak realm URL. Validated by the Resource Server."),
+            ("aud",          "Audience — intended recipient(s) of this token"),
+            ("azp",          "Authorized party — the client_id that requested the token"),
+            ("exp",          "Expiry — Unix timestamp. Token is rejected after this."),
+            ("iat",          "Issued At — when the token was minted"),
+            ("jti",          "JWT ID — unique token identifier (prevents replay)"),
+            ("scope",        "OAuth2 scopes granted to this token"),
+            ("realm_access", "Realm-level roles assigned to the user/service account"),
+            ("preferred_username", "Human-readable username"),
+            ("email",        "User's email address"),
+            ("given_name",   "First name"),
+            ("family_name",  "Last name"),
+            ("session_state","Keycloak SSO session ID"),
+          ] %}
+          {% for claim, desc in claims %}
+          <tr class="border-bottom">
+            <td class="ps-3 py-2" style="width:160px"><code class="claim-key">{{ claim }}</code></td>
+            <td class="pe-3 py-2 text-muted">{{ desc }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {# ── Signature explanation ─────────────────────────────────────────────────── #}
+  <div class="card shadow-sm mb-3">
+    <div class="card-header">
+      <span class="jwt-signature fw-semibold">Signature</span>
+      <span class="text-muted small ms-2">— integrity proof</span>
+    </div>
+    <div class="card-body small text-muted">
+      <p class="mb-2">
+        Computed by Keycloak as:<br>
+        <code>RS256( Base64URL(header) + "." + Base64URL(payload),  privateKey )</code>
+      </p>
+      <p class="mb-0">
+        The Resource Server verifies this using Keycloak's <strong>public key</strong>
+        fetched from the JWKS endpoint
+        (<code>/realms/demo/protocol/openid-connect/certs</code>).
+        Any modification to the token invalidates the signature.
+      </p>
+    </div>
+  </div>
+
+  {# ── Other tokens ─────────────────────────────────────────────────────────── #}
+  {% if refresh_token_info %}
+  <div class="card shadow-sm mb-3">
+    <div class="card-header fw-semibold small">Refresh Token — Payload</div>
+    <div class="card-body">
+      <pre class="json-block" style="font-size:.68rem">{{ refresh_token_info.payload | tojson(indent=2) }}</pre>
+      <p class="text-muted small mb-0 mt-2">
+        Used to obtain a new access token without re-authenticating.
+        Sent to <code>POST /token</code> with <code>grant_type=refresh_token</code>.
+      </p>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if id_token_info %}
+  <div class="card shadow-sm mb-3">
+    <div class="card-header fw-semibold small">ID Token — Payload</div>
+    <div class="card-body">
+      <pre class="json-block" style="font-size:.68rem">{{ id_token_info.payload | tojson(indent=2) }}</pre>
+      <p class="text-muted small mb-0 mt-2">
+        OpenID Connect identity token — contains user identity claims.
+        Not meant to be sent to resource servers (use the access token instead).
+      </p>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+</div>
+
+<div class="d-flex gap-2 mt-2">
+  <a href="/auth/refresh" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-repeat me-1"></i>Refresh Token
+  </a>
+  <a href="/auth/logout" class="btn btn-outline-danger btn-sm">
+    <i class="bi bi-box-arrow-right me-1"></i>Logout
+  </a>
+</div>
+
+{% endblock %}

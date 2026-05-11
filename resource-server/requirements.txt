@@ -1,0 +1,9 @@
+fastapi==0.111.1
+uvicorn[standard]==0.30.1
+# cryptography must be a direct dependency — do not rely solely on PyJWT's optional extra.
+# Without it, PyJWT silently skips all RSA keys from the JWKS and raises
+# "The JWK Set did not contain any usable keys."
+cryptography>=42.0,<44
+PyJWT[cryptography]==2.8.0
+httpx==0.27.0
+pydantic==2.7.4

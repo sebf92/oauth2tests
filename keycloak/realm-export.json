@@ -1,0 +1,193 @@
+{
+  "realm": "demo",
+  "displayName": "OAuth2 Demo Realm",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+  "accessTokenLifespan": 1800,
+  "refreshTokenMaxReuse": 0,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "defaultSignatureAlgorithm": "RS256",
+
+  "roles": {
+    "realm": [
+      {
+        "name": "admin-role",
+        "description": "Administrator — full access to all API endpoints"
+      },
+      {
+        "name": "user-role",
+        "description": "Regular user — access to user-level endpoints"
+      }
+    ],
+    "client": {}
+  },
+
+  "clients": [
+    {
+      "clientId": "demo-client",
+      "name": "Demo Web Client",
+      "description": "Demonstrates Authorization Code and Password Grant flows",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "demo-client-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:5000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5000"
+      ],
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "1800",
+        "post.logout.redirect.uris": "http://localhost:5000/*"
+      },
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "middle-tier-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "middle-tier-client",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt",
+        "roles"
+      ]
+    },
+    {
+      "clientId": "middle-tier-client",
+      "name": "Middle-Tier Service",
+      "description": "Intermediate service that exchanges user tokens On-Behalf-Of (RFC 8693)",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "middle-tier-client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt",
+        "roles"
+      ]
+    },
+    {
+      "clientId": "service-client",
+      "name": "Service Account Client",
+      "description": "Demonstrates Client Credentials flow (machine-to-machine)",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "service-client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ]
+    }
+  ],
+
+  "users": [
+    {
+      "username": "alice",
+      "email": "alice@example.com",
+      "firstName": "Alice",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "alice123", "temporary": false }
+      ],
+      "realmRoles": ["admin-role", "user-role"]
+    },
+    {
+      "username": "bob",
+      "email": "bob@example.com",
+      "firstName": "Bob",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "bob123", "temporary": false }
+      ],
+      "realmRoles": ["user-role"]
+    },
+    {
+      "username": "charlie",
+      "email": "charlie@example.com",
+      "firstName": "Charlie",
+      "lastName": "Guest",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "charlie123", "temporary": false }
+      ],
+      "realmRoles": []
+    },
+    {
+      "username": "service-account-service-client",
+      "enabled": true,
+      "serviceAccountClientId": "service-client",
+      "realmRoles": ["user-role"]
+    },
+    {
+      "username": "service-account-middle-tier-client",
+      "enabled": true,
+      "serviceAccountClientId": "middle-tier-client",
+      "realmRoles": ["user-role"]
+    }
+  ]
+}

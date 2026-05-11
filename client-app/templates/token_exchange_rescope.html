@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% block title %}Token Rescoping (Downscoping){% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted small">
+    <i class="bi bi-arrow-left me-1"></i>Back to home
+  </a>
+</div>
+
+{# ── Title ───────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-info">
+  <h1 class="h4 fw-bold mb-1">
+    <i class="bi bi-scissors text-info me-2"></i>Token Rescoping (Downscoping) — RFC 8693 Token Exchange
+  </h1>
+  <p class="text-muted mb-0">
+    Exchange a powerful token for a <strong>narrower one</strong> — the <code>roles</code> scope is
+    intentionally omitted so the new token carries no <code>realm_access.roles</code> claim.
+    This enforces <strong>least-privilege</strong> when delegating access to a sub-component that
+    should not inherit admin rights.
+  </p>
+</div>
+
+<div class="row g-4">
+
+{# ── LEFT — How it works + exchange result ────────────────────────────────── #}
+<div class="col-lg-6">
+
+  <h5 class="section-title">How Token Rescoping Works</h5>
+  <div class="card shadow-sm mb-4">
+    <div class="card-body small">
+      <ol class="mb-3">
+        <li class="mb-1">A service holds a token with full scopes (including <code>roles</code>).</li>
+        <li class="mb-1">It wants to call a sub-component that <em>should not</em> have admin rights.</li>
+        <li class="mb-1">It calls the token endpoint with <code>grant_type=token-exchange</code>,
+            passing its own token as <code>subject_token</code> but requesting only
+            <code>scope=openid email profile</code> — no <code>roles</code>.</li>
+        <li class="mb-1">Keycloak issues a <strong>new, narrower token</strong>:
+          <ul>
+            <li>No <code>realm_access.roles</code> claim</li>
+            <li>Same <code>sub</code> and <code>azp</code> as the original</li>
+          </ul>
+        </li>
+        <li>The sub-component receives a token that cannot escalate privileges.</li>
+      </ol>
+      <div class="bg-light rounded p-2 font-monospace" style="font-size:.75rem">
+        <div class="text-primary">POST /realms/demo/protocol/openid-connect/token</div>
+        <div class="mt-1 text-secondary">grant_type = <span class="text-danger">urn:ietf:params:oauth:grant-type:token-exchange</span></div>
+        <div class="text-secondary">client_id   = demo-client</div>
+        <div class="text-secondary">client_secret = ***</div>
+        <div class="text-secondary">subject_token = &lt;original access token&gt;</div>
+        <div class="text-secondary">subject_token_type = urn:ietf:params:oauth:token-type:access_token</div>
+        <div class="text-secondary">requested_token_type = urn:ietf:params:oauth:token-type:access_token</div>
+        <div class="text-warning">scope = openid email profile  <em class="text-muted">(no 'roles'!)</em></div>
+      </div>
+
+      <div class="alert alert-info small mt-3 mb-0">
+        <i class="bi bi-info-circle me-1"></i>
+        <strong>Why move <code>roles</code> to optional scope?</strong><br>
+        In this demo, <code>roles</code> is an <em>optional</em> client scope in <code>demo-client</code>.
+        When it is <em>default</em>, Keycloak always adds it regardless of the requested scope.
+        Making it optional means the token exchange can produce a token without role claims.
+      </div>
+    </div>
+  </div>
+
+  <h5 class="section-title">Exchange Result</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-header d-flex align-items-center gap-2">
+      <span class="badge bg-secondary">POST</span>
+      <code class="flex-grow-1">/realms/demo/protocol/openid-connect/token</code>
+      {% if exchange_result.success %}
+        <span class="badge bg-success">{{ exchange_result.status_code }}</span>
+      {% else %}
+        <span class="badge bg-danger">{{ exchange_result.status_code }}</span>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      {% if exchange_result.success %}
+        <div class="d-flex align-items-center text-success mb-3">
+          <i class="bi bi-check-circle-fill me-2 fs-5"></i>
+          <strong>Token rescoped successfully!</strong>
+        </div>
+      {% else %}
+        <div class="d-flex align-items-center text-danger mb-3">
+          <i class="bi bi-x-circle-fill me-2 fs-5"></i>
+          <strong>Token exchange failed ({{ exchange_result.status_code }})</strong>
+        </div>
+
+        {% if exchange_result.status_code == 400 %}
+        <div class="alert alert-warning small">
+          <i class="bi bi-info-circle-fill me-1"></i>
+          <strong>Keycloak returned 400.</strong> Common causes:
+          <ul class="mb-0 mt-1">
+            <li><code>KC_FEATURES=preview</code> is set but Keycloak has not been restarted — run
+                <code>docker compose restart keycloak</code></li>
+            <li>Self-exchange (<code>demo-client</code> exchanging its own token) requires that
+                fine-grained permissions be enabled for the client in the Admin Console</li>
+          </ul>
+        </div>
+        {% elif exchange_result.status_code == 501 %}
+        <div class="alert alert-warning small">
+          <i class="bi bi-info-circle-fill me-1"></i>
+          <strong>Token exchange is not enabled.</strong>
+          Make sure <code>KC_FEATURES=preview</code> (or <code>KC_FEATURES=token-exchange</code>)
+          is set in <code>docker-compose.yml</code> and Keycloak has been restarted.
+        </div>
+        {% endif %}
+
+        <pre class="json-block">{{ exchange_result.data | tojson(indent=2) }}</pre>
+      {% endif %}
+
+      {% if exchange_result.success and exchange_result.data %}
+        <pre class="json-block">{{ exchange_result.data | tojson(indent=2) }}</pre>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+{# ── RIGHT — Token comparison ──────────────────────────────────────────────── #}
+<div class="col-lg-6">
+
+  <h5 class="section-title">Token Comparison</h5>
+
+  {# Original token #}
+  <div class="card shadow-sm mb-3">
+    <div class="card-header small fw-semibold d-flex align-items-center gap-2">
+      <span class="badge bg-secondary">Before</span> Original access token (full scopes)
+    </div>
+    <div class="card-body">
+      {% if original_token_info and original_token_info.payload %}
+        <table class="table table-sm table-borderless mb-2 small">
+          <tr>
+            <td class="text-muted" style="width:80px">user</td>
+            <td><strong>{{ original_token_info.payload.get('preferred_username', '—') }}</strong></td>
+          </tr>
+          <tr>
+            <td class="text-muted">scope</td>
+            <td><code>{{ original_token_info.payload.get('scope', '—') }}</code></td>
+          </tr>
+          <tr>
+            <td class="text-muted">roles</td>
+            <td>
+              {% set roles = original_token_info.payload.get('realm_access', {}).get('roles', []) %}
+              {% for r in roles %}
+                <span class="badge bg-{{ 'danger' if 'admin' in r else 'primary' }} me-1">{{ r }}</span>
+              {% else %}
+                <span class="text-muted">none</span>
+              {% endfor %}
+            </td>
+          </tr>
+        </table>
+        <pre class="json-block" style="font-size:.68rem">{{ original_token_info.payload | tojson(indent=2) }}</pre>
+      {% else %}
+        <p class="text-muted small">No token available.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Rescoped token #}
+  <div class="card shadow-sm mb-3 {% if exchange_result.success %}border-info{% else %}border-secondary{% endif %}">
+    <div class="card-header small fw-semibold d-flex align-items-center gap-2">
+      <span class="badge bg-{{ 'info text-dark' if exchange_result.success else 'secondary' }}">After</span>
+      Rescoped token (roles stripped)
+    </div>
+    <div class="card-body">
+      {% if rescoped_token_info and rescoped_token_info.payload %}
+        <table class="table table-sm table-borderless mb-2 small">
+          <tr>
+            <td class="text-muted" style="width:80px">user</td>
+            <td><strong>{{ rescoped_token_info.payload.get('preferred_username', '—') }}</strong>
+              <span class="text-muted ms-1 small">← preserved</span>
+            </td>
+          </tr>
+          <tr>
+            <td class="text-muted">scope</td>
+            <td>
+              <code class="text-info fw-semibold">{{ rescoped_token_info.payload.get('scope', '—') }}</code>
+              <span class="text-muted ms-1 small">← narrower</span>
+            </td>
+          </tr>
+          <tr>
+            <td class="text-muted">roles</td>
+            <td>
+              {% set new_roles = rescoped_token_info.payload.get('realm_access', {}).get('roles', []) %}
+              {% if new_roles %}
+                {% for r in new_roles %}
+                  <span class="badge bg-{{ 'danger' if 'admin' in r else 'primary' }} me-1">{{ r }}</span>
+                {% endfor %}
+              {% else %}
+                <span class="badge bg-success text-white">
+                  <i class="bi bi-check me-1"></i>none — stripped!
+                </span>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+        <pre class="json-block" style="font-size:.68rem">{{ rescoped_token_info.payload | tojson(indent=2) }}</pre>
+      {% else %}
+        <div class="text-center py-3">
+          <i class="bi bi-shield-slash text-secondary display-6 mb-2 d-block"></i>
+          <p class="text-muted small mb-0">Exchange did not produce a token — see result on the left.</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Verify with resource server #}
+  {% if exchange_result.success %}
+  <div class="card bg-light border-0 shadow-sm">
+    <div class="card-body small">
+      <strong><i class="bi bi-shield-check text-info me-1"></i>Verify the rescoped token</strong>
+      <p class="mt-2 mb-2">
+        The rescoped token still has a valid signature and <code>sub</code> — but because it has
+        no <code>realm_access.roles</code>, the resource server will:
+      </p>
+      <ul class="mb-2">
+        <li>Accept it on <code>GET /api/products</code> (any valid JWT)</li>
+        <li><strong>Reject it with 403</strong> on <code>GET /api/users/me</code> (requires <code>user-role</code>)</li>
+        <li><strong>Reject it with 403</strong> on <code>GET /api/admin/dashboard</code> (requires <code>admin-role</code>)</li>
+      </ul>
+      <p class="text-muted mb-0">To test this, copy the rescoped <code>access_token</code> above and use it
+         in a tool like Insomnia or curl against <code>http://localhost:8001</code>.</p>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+</div>
+
+{# ── Key takeaways ─────────────────────────────────────────────────────────── #}
+<div class="card bg-light border-0 shadow-sm mt-2">
+  <div class="card-body small">
+    <strong><i class="bi bi-lightbulb-fill text-info me-1"></i>Key takeaways</strong>
+    <ul class="mb-0 mt-2">
+      <li>Downscoping lets you enforce <strong>least privilege</strong> — hand a sub-component only the permissions it actually needs.</li>
+      <li>The <code>scope</code> claim in the new token reflects the narrower set; <code>realm_access.roles</code> is absent.</li>
+      <li>The token is still cryptographically valid — the resource server trusts it, but role checks will return 403.</li>
+      <li>This only works when <code>roles</code> is an <em>optional</em> scope in the client (not default); see <code>realm-export.json</code>.</li>
+      <li>Requires <code>KC_FEATURES=preview</code> and Keycloak token-exchange permissions configured in the Admin Console.</li>
+    </ul>
+  </div>
+</div>
+
+{% endblock %}

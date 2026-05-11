@@ -1,0 +1,132 @@
+services:
+
+  # ── PostgreSQL — Keycloak persistence ───────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: oauth2-postgres
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - oauth2-net
+
+  # ── Keycloak — Identity Provider ────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: oauth2-keycloak
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak_password
+      # Fix the hostname so the JWT `iss` claim is always http://localhost:8080/realms/demo
+      KC_HOSTNAME: localhost
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_LOG_LEVEL: INFO
+      # Enable preview features for RFC 8693 token exchange (OBO / rescoping demo)
+      KC_FEATURES: "preview"
+    command: start-dev --import-realm
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+    networks:
+      - oauth2-net
+
+  # ── Keycloak Init — configures token-exchange permissions via Admin API ─────
+  # Runs once after Keycloak is healthy, then exits (restart: no).
+  # Grants middle-tier-client permission to perform On-Behalf-Of exchanges
+  # against demo-client tokens — this cannot be expressed in realm-export.json.
+  keycloak-init:
+    build:
+      context: ./keycloak-init
+      dockerfile: Dockerfile
+    container_name: oauth2-keycloak-init
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - oauth2-net
+
+  # ── Resource Server — Protected FastAPI ─────────────────────────────────────
+  resource-server:
+    build:
+      context: ./resource-server
+      dockerfile: Dockerfile
+    container_name: oauth2-resource-server
+    environment:
+      # Internal URL — used to fetch JWKS (server-to-server)
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_REALM: demo
+      # Must match the `iss` claim in JWT tokens (public-facing hostname)
+      KEYCLOAK_ISSUER: http://localhost:8080/realms/demo
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8001"
+    ports:
+      - "8001:8001"
+    depends_on:
+      - keycloak
+    networks:
+      - oauth2-net
+
+  # ── Client App — Flask OAuth2 demo ──────────────────────────────────────────
+  client-app:
+    build:
+      context: ./client-app
+      dockerfile: Dockerfile
+    container_name: oauth2-client-app
+    environment:
+      # External URL — used for browser redirects (Authorization Code flow)
+      KEYCLOAK_EXTERNAL_URL: http://localhost:8080
+      # Internal URL — used for server-side token exchange
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_REALM: demo
+      # demo-client: supports Authorization Code + Password flows
+      KEYCLOAK_CLIENT_ID: demo-client
+      KEYCLOAK_CLIENT_SECRET: demo-client-secret
+      # service-client: supports Client Credentials flow only
+      SERVICE_CLIENT_ID: service-client
+      SERVICE_CLIENT_SECRET: service-client-secret
+      # middle-tier-client: used for the On-Behalf-Of (RFC 8693) token exchange demo
+      MIDDLE_TIER_CLIENT_ID: middle-tier-client
+      MIDDLE_TIER_CLIENT_SECRET: middle-tier-client-secret
+      RESOURCE_SERVER_URL: http://resource-server:8001
+      REDIRECT_URI: http://localhost:5000/auth/callback
+      SECRET_KEY: change-this-secret-key-in-production-abc123
+      FLASK_ENV: development
+    ports:
+      - "5000:5000"
+    depends_on:
+      - keycloak
+      - resource-server
+    networks:
+      - oauth2-net
+
+networks:
+  oauth2-net:
+    driver: bridge
+
+volumes:
+  postgres_data:

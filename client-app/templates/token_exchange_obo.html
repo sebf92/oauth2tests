@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}On-Behalf-Of Token Exchange{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted small">
+    <i class="bi bi-arrow-left me-1"></i>Back to home
+  </a>
+</div>
+
+{# ── Title ───────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-warning">
+  <h1 class="h4 fw-bold mb-1">
+    <i class="bi bi-arrow-left-right text-warning me-2"></i>On-Behalf-Of (OBO) — RFC 8693 Token Exchange
+  </h1>
+  <p class="text-muted mb-0">
+    A <strong>middle-tier service</strong> exchanges the user's access token for a new one that still
+    represents the same end-user, but is now scoped to (and signed for) the middle-tier client.
+    This lets downstream APIs know <em>who</em> the user is without the middle tier forwarding the
+    original credential.
+  </p>
+</div>
+
+<div class="row g-4">
+
+{# ── LEFT — How it works + exchange result ────────────────────────────────── #}
+<div class="col-lg-6">
+
+  <h5 class="section-title">How On-Behalf-Of Works</h5>
+  <div class="card shadow-sm mb-4">
+    <div class="card-body small">
+      <ol class="mb-3">
+        <li class="mb-1">User authenticates → gets an <strong>access token</strong> from Keycloak.</li>
+        <li class="mb-1">User calls the <strong>middle-tier API</strong> with that token.</li>
+        <li class="mb-1">Middle tier calls Keycloak's token endpoint with <code>grant_type=token-exchange</code>,
+            passing the user token as <code>subject_token</code> and authenticating itself with
+            its own <code>client_id</code> + <code>client_secret</code>.</li>
+        <li class="mb-1">Keycloak issues a <strong>new token</strong>:
+          <ul>
+            <li><code>sub</code> still points to the original user</li>
+            <li><code>azp</code> is now <code>middle-tier-client</code></li>
+            <li><code>act</code> (actor) claim records the delegation chain</li>
+          </ul>
+        </li>
+        <li>Middle tier forwards the new token to the downstream resource server.</li>
+      </ol>
+      <div class="bg-light rounded p-2 font-monospace" style="font-size:.75rem">
+        <div class="text-primary">POST /realms/demo/protocol/openid-connect/token</div>
+        <div class="mt-1 text-secondary">grant_type = <span class="text-danger">urn:ietf:params:oauth:grant-type:token-exchange</span></div>
+        <div class="text-secondary">client_id   = middle-tier-client</div>
+        <div class="text-secondary">client_secret = ***</div>
+        <div class="text-secondary">subject_token = &lt;user's access token&gt;</div>
+        <div class="text-secondary">subject_token_type = urn:ietf:params:oauth:token-type:access_token</div>
+        <div class="text-secondary">requested_token_type = urn:ietf:params:oauth:token-type:access_token</div>
+      </div>
+    </div>
+  </div>
+
+  <h5 class="section-title">Exchange Result</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-header d-flex align-items-center gap-2">
+      <span class="badge bg-secondary">POST</span>
+      <code class="flex-grow-1">/realms/demo/protocol/openid-connect/token</code>
+      {% if exchange_result.success %}
+        <span class="badge bg-success">{{ exchange_result.status_code }}</span>
+      {% else %}
+        <span class="badge bg-danger">{{ exchange_result.status_code }}</span>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      {% if exchange_result.success %}
+        <div class="d-flex align-items-center text-success mb-3">
+          <i class="bi bi-check-circle-fill me-2 fs-5"></i>
+          <strong>Token exchange succeeded!</strong>
+        </div>
+      {% else %}
+        <div class="d-flex align-items-center text-danger mb-3">
+          <i class="bi bi-x-circle-fill me-2 fs-5"></i>
+          <strong>Token exchange failed ({{ exchange_result.status_code }})</strong>
+        </div>
+
+        {% if exchange_result.status_code in (400, 403) %}
+        <div class="alert alert-warning small">
+          <i class="bi bi-info-circle-fill me-1"></i>
+          <strong>Token exchange permission not yet configured.</strong><br>
+          The <code>keycloak-init</code> container sets this up automatically at startup — it may
+          still be running or may have failed.  Check its logs:
+          <pre class="mt-2 mb-1 bg-dark text-light p-2 rounded" style="font-size:.72rem">docker compose logs keycloak-init</pre>
+          If it failed, you can configure the permission manually:
+          <ol class="mt-1 mb-0">
+            <li>Open the <a href="{{ keycloak_url }}/admin/{{ realm }}/console" target="_blank">Admin Console</a>
+                → <strong>Clients → demo-client → Permissions</strong> tab</li>
+            <li>Enable <em>Fine-grained permissions</em></li>
+            <li>Edit the <em>token-exchange</em> permission → add a client policy for <code>middle-tier-client</code></li>
+          </ol>
+        </div>
+        {% elif exchange_result.status_code == 501 %}
+        <div class="alert alert-warning small">
+          <i class="bi bi-info-circle-fill me-1"></i>
+          <strong>Token exchange is not enabled.</strong>
+          Make sure <code>KC_FEATURES=preview</code> is set in docker-compose.yml and
+          Keycloak has been restarted.
+        </div>
+        {% endif %}
+
+        <pre class="json-block">{{ exchange_result.data | tojson(indent=2) }}</pre>
+      {% endif %}
+
+      {% if exchange_result.success and exchange_result.data %}
+        <pre class="json-block">{{ exchange_result.data | tojson(indent=2) }}</pre>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+{# ── RIGHT — Token comparison ──────────────────────────────────────────────── #}
+<div class="col-lg-6">
+
+  <h5 class="section-title">Token Comparison</h5>
+
+  {# Original token #}
+  <div class="card shadow-sm mb-3">
+    <div class="card-header small fw-semibold d-flex align-items-center gap-2">
+      <span class="badge bg-secondary">Original</span> User's access token (input)
+    </div>
+    <div class="card-body">
+      {% if original_token_info and original_token_info.payload %}
+        <table class="table table-sm table-borderless mb-2 small">
+          <tr>
+            <td class="text-muted" style="width:80px">sub</td>
+            <td><code>{{ original_token_info.payload.get('sub', '—')[:20] }}…</code></td>
+          </tr>
+          <tr>
+            <td class="text-muted">azp</td>
+            <td><code>{{ original_token_info.payload.get('azp', '—') }}</code></td>
+          </tr>
+          <tr>
+            <td class="text-muted">user</td>
+            <td><strong>{{ original_token_info.payload.get('preferred_username', '—') }}</strong></td>
+          </tr>
+          <tr>
+            <td class="text-muted">roles</td>
+            <td>
+              {% for r in original_token_info.payload.get('realm_access', {}).get('roles', []) %}
+                <span class="badge bg-{{ 'danger' if 'admin' in r else 'primary' }} me-1">{{ r }}</span>
+              {% else %}
+                <span class="text-muted">none</span>
+              {% endfor %}
+            </td>
+          </tr>
+          <tr>
+            <td class="text-muted">act</td>
+            <td><span class="text-muted">—</span></td>
+          </tr>
+        </table>
+        <pre class="json-block" style="font-size:.68rem">{{ original_token_info.payload | tojson(indent=2) }}</pre>
+      {% else %}
+        <p class="text-muted small">No token available.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Exchanged token #}
+  <div class="card shadow-sm mb-3 {% if exchange_result.success %}border-success{% else %}border-secondary{% endif %}">
+    <div class="card-header small fw-semibold d-flex align-items-center gap-2">
+      <span class="badge bg-{{ 'success' if exchange_result.success else 'secondary' }}">Exchanged</span>
+      Middle-tier token (output)
+    </div>
+    <div class="card-body">
+      {% if exchanged_token_info and exchanged_token_info.payload %}
+        <table class="table table-sm table-borderless mb-2 small">
+          <tr>
+            <td class="text-muted" style="width:80px">sub</td>
+            <td><code>{{ exchanged_token_info.payload.get('sub', '—')[:20] }}…</code></td>
+          </tr>
+          <tr>
+            <td class="text-muted">azp</td>
+            <td>
+              <code class="text-success fw-semibold">{{ exchanged_token_info.payload.get('azp', '—') }}</code>
+              <span class="text-muted ms-1 small">← changed</span>
+            </td>
+          </tr>
+          <tr>
+            <td class="text-muted">user</td>
+            <td><strong>{{ exchanged_token_info.payload.get('preferred_username', '—') }}</strong>
+              <span class="text-muted ms-1 small">← preserved</span>
+            </td>
+          </tr>
+          <tr>
+            <td class="text-muted">roles</td>
+            <td>
+              {% for r in exchanged_token_info.payload.get('realm_access', {}).get('roles', []) %}
+                <span class="badge bg-{{ 'danger' if 'admin' in r else 'primary' }} me-1">{{ r }}</span>
+              {% else %}
+                <span class="text-muted">none</span>
+              {% endfor %}
+            </td>
+          </tr>
+          <tr>
+            <td class="text-muted">act</td>
+            <td><code class="text-success">{{ exchanged_token_info.payload.get('act', {}) | tojson }}</code></td>
+          </tr>
+        </table>
+        <pre class="json-block" style="font-size:.68rem">{{ exchanged_token_info.payload | tojson(indent=2) }}</pre>
+      {% else %}
+        <div class="text-center py-3">
+          <i class="bi bi-shield-slash text-secondary display-6 mb-2 d-block"></i>
+          <p class="text-muted small mb-0">Exchange did not produce a token — see result on the left.</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+</div>
+
+{# ── Key takeaways ─────────────────────────────────────────────────────────── #}
+<div class="card bg-light border-0 shadow-sm mt-2">
+  <div class="card-body small">
+    <strong><i class="bi bi-lightbulb-fill text-warning me-1"></i>Key takeaways</strong>
+    <ul class="mb-0 mt-2">
+      <li>The <code>sub</code> claim (user identity) is <strong>preserved</strong> in the exchanged token.</li>
+      <li>The <code>azp</code> (authorized party) changes to <code>middle-tier-client</code>, recording which service made the exchange.</li>
+      <li>An <code>act</code> (actor) claim may appear, building a delegation chain auditable by downstream services.</li>
+      <li>Requires <code>KC_FEATURES=preview</code> in Keycloak <em>and</em> fine-grained permission policies in the admin console.</li>
+    </ul>
+  </div>
+</div>
+
+{% endblock %}

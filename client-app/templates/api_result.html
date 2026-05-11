@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}API Result — {{ endpoint }}{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted small">
+    <i class="bi bi-arrow-left me-1"></i>Back to home
+  </a>
+</div>
+
+<div class="row g-4">
+
+{# ── Response card ────────────────────────────────────────────────────────────── #}
+<div class="col-lg-7">
+  <h5 class="section-title">API Response</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-header d-flex align-items-center gap-2">
+      <span class="badge bg-secondary">GET</span>
+      <code class="flex-grow-1">{{ result.url }}</code>
+      {% if result.success %}
+        <span class="badge bg-success">{{ result.status_code }}</span>
+      {% else %}
+        <span class="badge bg-danger">{{ result.status_code }}</span>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      {% if result.success %}
+        <div class="d-flex align-items-center text-success mb-3">
+          <i class="bi bi-check-circle-fill me-2 fs-5"></i>
+          <strong>Access granted</strong>
+        </div>
+      {% else %}
+        <div class="d-flex align-items-center text-danger mb-3">
+          <i class="bi bi-x-circle-fill me-2 fs-5"></i>
+          <strong>
+            {% if result.status_code == 401 %}Access denied — invalid or missing token (401 Unauthorized)
+            {% elif result.status_code == 403 %}Access denied — insufficient role (403 Forbidden)
+            {% elif result.status_code == 503 %}Service unavailable (503)
+            {% else %}Error ({{ result.status_code }}){% endif %}
+          </strong>
+        </div>
+        {# ── Show the exact error message from the resource server ── #}
+        {% if result.data and result.data.detail %}
+          <div class="alert alert-{{ 'warning' if result.status_code == 403 else 'danger' }} small mb-3">
+            <i class="bi bi-bug-fill me-1"></i>
+            <strong>Resource server says:</strong>
+            <code class="ms-1">{{ result.data.detail }}</code>
+          </div>
+        {% endif %}
+
+        {% if result.status_code == 403 %}
+          <div class="alert alert-warning small">
+            <i class="bi bi-info-circle me-1"></i>
+            The token was <strong>valid</strong> but your roles are insufficient for this endpoint.
+            Try logging in as <strong>alice</strong> (who has <code>admin-role</code>).
+          </div>
+        {% elif result.status_code == 401 %}
+          <div class="alert alert-danger small">
+            <i class="bi bi-info-circle me-1"></i>
+            Token validation failed. Common causes:
+            <ul class="mb-0 mt-1">
+              <li><strong>Token expired</strong> — log out and log in again</li>
+              <li><strong>Keycloak JWKS unreachable</strong> — check resource-server logs</li>
+              <li><strong>Issuer mismatch</strong> — check <code>KC_HOSTNAME</code> in docker-compose.yml</li>
+            </ul>
+          </div>
+        {% endif %}
+      {% endif %}
+
+      <pre class="json-block">{{ result.data | tojson(indent=2) }}</pre>
+    </div>
+  </div>
+</div>
+
+{# ── Token used ────────────────────────────────────────────────────────────── #}
+<div class="col-lg-5">
+  <h5 class="section-title">Token Used</h5>
+
+  {% if token_info %}
+    <div class="card shadow-sm mb-3">
+      <div class="card-header small fw-semibold">Access Token — Header</div>
+      <div class="card-body">
+        <pre class="json-block" style="font-size:.72rem">{{ token_info.header | tojson(indent=2) }}</pre>
+        <p class="text-muted small mb-0 mt-2">
+          <code>alg</code>: signature algorithm &bull;
+          <code>kid</code>: key ID (selects the correct Keycloak public key)
+        </p>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-3">
+      <div class="card-header small fw-semibold">Access Token — Payload (claims)</div>
+      <div class="card-body">
+        <pre class="json-block" style="font-size:.72rem">{{ token_info.payload | tojson(indent=2) }}</pre>
+        <div class="mt-2 small text-muted">
+          Key claims used by the Resource Server:
+          <ul class="mb-0 mt-1">
+            <li><code>iss</code> — issuer (must match Keycloak realm URL)</li>
+            <li><code>exp</code> — expiry Unix timestamp</li>
+            <li><code>realm_access.roles</code> — role-based access control</li>
+            <li><code>sub</code> — unique user identifier</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <div class="card shadow-sm">
+      <div class="card-body text-muted small text-center py-4">
+        <i class="bi bi-shield-slash display-6 mb-2 d-block"></i>
+        No token was sent (public endpoint).
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="card bg-light border-0 shadow-sm mt-3">
+    <div class="card-body small">
+      <strong>Try other endpoints:</strong>
+      <div class="d-flex flex-wrap gap-1 mt-2">
+        <a href="/api/call/public"     class="btn btn-xs btn-sm btn-outline-success">Public</a>
+        <a href="/api/call/products"   class="btn btn-xs btn-sm btn-outline-warning text-dark">Products</a>
+        <a href="/api/call/me"         class="btn btn-xs btn-sm btn-outline-primary">Me</a>
+        <a href="/api/call/admin"      class="btn btn-xs btn-sm btn-outline-danger">Admin</a>
+        <a href="/api/call/users"      class="btn btn-xs btn-sm btn-outline-danger">Users</a>
+        <a href="/api/call/token-info" class="btn btn-xs btn-sm btn-outline-info">Token Info</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+{% endblock %}

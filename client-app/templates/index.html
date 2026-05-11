@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+{% block title %}Home — OAuth2 + JWT Demo{% endblock %}
+
+{% block content %}
+
+{# ── Hero ───────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-primary">
+  <h1 class="h4 fw-bold mb-1"><i class="bi bi-shield-lock text-primary me-2"></i>OAuth2 + JWT with Keycloak</h1>
+  <p class="text-muted mb-0">
+    This demo shows three OAuth2 grant types, JWT validation, and role-based access control.
+    All tokens are issued by <strong>Keycloak</strong> and validated by the <strong>Resource Server</strong>.
+  </p>
+</div>
+
+<div class="row g-4">
+
+{# ── LEFT COLUMN ─────────────────────────────────────────────────────────────── #}
+<div class="col-lg-7">
+
+  {# ── Session status ─────────────────────────────────────────────────────── #}
+  <h5 class="section-title">Session Status</h5>
+  {% if is_authenticated and token_info %}
+    <div class="card border-success mb-4 shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="fw-semibold text-success"><i class="bi bi-check-circle-fill me-1"></i>Authenticated</span>
+          <span class="badge bg-secondary">{{ flow_used | replace('_', ' ') | title }}</span>
+        </div>
+        <table class="table table-sm table-borderless mb-2">
+          <tr><td class="text-muted" style="width:130px">Username</td>
+              <td><strong>{{ token_info.payload.get('preferred_username', '—') }}</strong></td></tr>
+          <tr><td class="text-muted">Email</td>
+              <td>{{ token_info.payload.get('email', '—') }}</td></tr>
+          <tr><td class="text-muted">Roles</td>
+              <td>
+                {% for r in token_info.payload.get('realm_access', {}).get('roles', []) %}
+                  <span class="badge bg-{{ 'danger' if 'admin' in r else 'primary' }} me-1">{{ r }}</span>
+                {% else %}
+                  <span class="text-muted">none</span>
+                {% endfor %}
+              </td></tr>
+          <tr><td class="text-muted">Expires</td>
+              <td>{{ token_info.payload.get('exp_human', '—') }}</td></tr>
+          <tr><td class="text-muted">Client ID</td>
+              <td><code>{{ token_info.payload.get('azp', '—') }}</code></td></tr>
+        </table>
+        <div class="d-flex gap-2">
+          <a href="/token/inspect" class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-search me-1"></i>Inspect Token
+          </a>
+          {% if token_data and token_data.get('refresh_token') %}
+          <a href="/auth/refresh" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-arrow-repeat me-1"></i>Refresh Token
+          </a>
+          {% endif %}
+          <a href="/auth/logout" class="btn btn-sm btn-outline-danger ms-auto">
+            <i class="bi bi-box-arrow-right me-1"></i>Logout
+          </a>
+        </div>
+      </div>
+    </div>
+
+  {% elif is_expired %}
+    <div class="alert alert-warning">
+      <i class="bi bi-clock-history me-2"></i>Your token has <strong>expired</strong>.
+      <a href="/auth/authorization-code" class="alert-link ms-2">Log in again →</a>
+    </div>
+  {% else %}
+    <div class="card border-secondary mb-4 shadow-sm">
+      <div class="card-body text-center py-4">
+        <i class="bi bi-person-x display-6 text-secondary mb-2 d-block"></i>
+        <p class="text-muted mb-3">You are not authenticated. Choose a grant type below to obtain a JWT token.</p>
+        <a href="/auth/authorization-code" class="btn btn-primary">
+          <i class="bi bi-box-arrow-in-right me-1"></i>Login with Keycloak
+        </a>
+      </div>
+    </div>
+  {% endif %}
+
+  {# ── API Demo ────────────────────────────────────────────────────────────── #}
+  <h5 class="section-title">Resource Server API Demo</h5>
+  <p class="text-muted small mb-3">
+    Call the protected Resource Server using your current token. Each endpoint enforces
+    different access rules.
+  </p>
+  <div class="row g-2">
+
+    <div class="col-sm-6">
+      <div class="card h-100 shadow-sm">
+        <div class="card-body">
+          <span class="badge bg-success mb-2">Public</span>
+          <h6 class="card-title mb-1"><code>GET /api/public</code></h6>
+          <p class="card-text text-muted small">No token required — open to everyone.</p>
+          <a href="/api/call/public" class="btn btn-sm btn-success w-100">Call</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-sm-6">
+      <div class="card h-100 shadow-sm">
+        <div class="card-body">
+          <span class="badge bg-warning text-dark mb-2">Any token</span>
+          <h6 class="card-title mb-1"><code>GET /api/products</code></h6>
+          <p class="card-text text-muted small">Valid JWT required. No specific role needed.</p>
+          <a href="/api/call/products" class="btn btn-sm btn-warning w-100 text-dark">Call</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-sm-6">
+      <div class="card h-100 shadow-sm">
+        <div class="card-body">
+          <span class="badge bg-primary mb-2">user-role</span>
+          <h6 class="card-title mb-1"><code>GET /api/users/me</code></h6>
+          <p class="card-text text-muted small">Requires <code>user-role</code> in the token.</p>
+          <a href="/api/call/me" class="btn btn-sm btn-primary w-100">Call</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-sm-6">
+      <div class="card h-100 shadow-sm">
+        <div class="card-body">
+          <span class="badge bg-danger mb-2">admin-role</span>
+          <h6 class="card-title mb-1"><code>GET /api/admin/dashboard</code></h6>
+          <p class="card-text text-muted small">Requires <code>admin-role</code>. Try as Bob to see a 403!</p>
+          <a href="/api/call/admin" class="btn btn-sm btn-danger w-100">Call</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-sm-6">
+      <div class="card h-100 shadow-sm">
+        <div class="card-body">
+          <span class="badge bg-danger mb-2">admin-role</span>
+          <h6 class="card-title mb-1"><code>GET /api/users</code></h6>
+          <p class="card-text text-muted small">Full user list — admin only.</p>
+          <a href="/api/call/users" class="btn btn-sm btn-danger w-100">Call</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-sm-6">
+      <div class="card h-100 shadow-sm">
+        <div class="card-body">
+          <span class="badge bg-info text-dark mb-2">Any token</span>
+          <h6 class="card-title mb-1"><code>GET /api/token/info</code></h6>
+          <p class="card-text text-muted small">Resource server decodes &amp; returns your token claims.</p>
+          <a href="/api/call/token-info" class="btn btn-sm btn-info w-100 text-dark">Call</a>
+        </div>
+      </div>
+    </div>
+
+  </div>{# /row #}
+</div>{# /left col #}
+
+{# ── RIGHT COLUMN ─────────────────────────────────────────────────────────────── #}
+<div class="col-lg-5">
+
+  {# ── Grant types ─────────────────────────────────────────────────────────── #}
+  <h5 class="section-title">OAuth2 Grant Types</h5>
+
+  {# Authorization Code #}
+  <div class="card flow-card mb-3 shadow-sm">
+    <div class="card-body">
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-primary me-2">1</span>
+        <h6 class="mb-0">Authorization Code Flow</h6>
+        <span class="badge bg-success ms-auto">Recommended</span>
+      </div>
+      <p class="card-text text-muted small mb-3">
+        Browser redirects to Keycloak for login. The authorization code is exchanged
+        for tokens server-side. Supports <code>id_token</code> + <code>refresh_token</code>.
+      </p>
+      <div class="bg-light rounded p-2 small font-monospace mb-3">
+        Browser → Keycloak → <em>code</em> → Server → <em>tokens</em>
+      </div>
+      <a href="/auth/authorization-code" class="btn btn-primary w-100">
+        <i class="bi bi-box-arrow-in-right me-1"></i>Login with Authorization Code
+      </a>
+    </div>
+  </div>
+
+  {# Password Grant #}
+  <div class="card flow-card mb-3 shadow-sm">
+    <div class="card-body">
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-warning text-dark me-2">2</span>
+        <h6 class="mb-0">Password Grant (ROPC)</h6>
+        <span class="badge bg-warning text-dark ms-auto">Legacy</span>
+      </div>
+      <p class="card-text text-muted small mb-3">
+        Credentials are sent directly to the server (no redirect). Simpler but less secure —
+        the client app sees the password. Useful for testing.
+      </p>
+      <div class="bg-light rounded p-2 small font-monospace mb-3">
+        username + password → Token Endpoint → <em>tokens</em>
+      </div>
+      <a href="/auth/password" class="btn btn-warning w-100 text-dark">
+        <i class="bi bi-key me-1"></i>Try Password Grant
+      </a>
+    </div>
+  </div>
+
+  {# Client Credentials #}
+  <div class="card flow-card mb-3 shadow-sm">
+    <div class="card-body">
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-secondary me-2">3</span>
+        <h6 class="mb-0">Client Credentials</h6>
+        <span class="badge bg-info text-dark ms-auto">Machine-to-Machine</span>
+      </div>
+      <p class="card-text text-muted small mb-3">
+        No user involved. The application authenticates as itself using its
+        <code>client_id</code> + <code>client_secret</code>. Used for microservices.
+      </p>
+      <div class="bg-light rounded p-2 small font-monospace mb-3">
+        client_id + secret → Token Endpoint → <em>access_token</em>
+      </div>
+      <a href="/auth/client-credentials" class="btn btn-secondary w-100">
+        <i class="bi bi-robot me-1"></i>Get Service Account Token
+      </a>
+    </div>
+  </div>
+
+  {# Advanced Token Exchange #}
+  <h5 class="section-title mt-2">Advanced Token Exchange (RFC 8693)</h5>
+
+  {# On-Behalf-Of #}
+  <div class="card flow-card mb-3 shadow-sm border-start border-4 border-warning">
+    <div class="card-body">
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-warning text-dark me-2">4</span>
+        <h6 class="mb-0">On-Behalf-Of (OBO)</h6>
+        <span class="badge bg-secondary ms-auto">Delegation</span>
+      </div>
+      <p class="card-text text-muted small mb-3">
+        A middle-tier service exchanges the user's token for a new one that
+        preserves user identity but is issued to the service itself. The downstream
+        API still knows who the end-user is.
+      </p>
+      <div class="bg-light rounded p-2 small font-monospace mb-3">
+        user_token → middle-tier → <em>new token (same user, new azp)</em>
+      </div>
+      {% if is_authenticated %}
+        <a href="/auth/token-exchange/obo" class="btn btn-warning w-100 text-dark">
+          <i class="bi bi-arrow-left-right me-1"></i>Try On-Behalf-Of Exchange
+        </a>
+      {% else %}
+        <button class="btn btn-outline-warning w-100 text-dark" disabled>
+          <i class="bi bi-lock me-1"></i>Log in first
+        </button>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Token Rescoping #}
+  <div class="card flow-card mb-3 shadow-sm border-start border-4 border-info">
+    <div class="card-body">
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-info text-dark me-2">5</span>
+        <h6 class="mb-0">Token Rescoping (Downscoping)</h6>
+        <span class="badge bg-secondary ms-auto">Least Privilege</span>
+      </div>
+      <p class="card-text text-muted small mb-3">
+        Exchange a full token for a narrower one — the <code>roles</code> scope is
+        stripped so the new token carries no <code>realm_access.roles</code> claim.
+        Useful when delegating to a component that should not need admin rights.
+      </p>
+      <div class="bg-light rounded p-2 small font-monospace mb-3">
+        token (admin + user) → exchange → <em>token (no roles)</em>
+      </div>
+      {% if is_authenticated %}
+        <a href="/auth/token-exchange/rescope" class="btn btn-info w-100 text-dark">
+          <i class="bi bi-scissors me-1"></i>Try Token Rescoping
+        </a>
+      {% else %}
+        <button class="btn btn-outline-info w-100 text-dark" disabled>
+          <i class="bi bi-lock me-1"></i>Log in first
+        </button>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Test accounts #}
+  <div class="card bg-light border-0 shadow-sm">
+    <div class="card-body">
+      <h6 class="card-title"><i class="bi bi-people-fill me-1 text-primary"></i>Test Accounts</h6>
+      <table class="table table-sm table-borderless mb-0 small">
+        <thead><tr>
+          <th>Username</th><th>Password</th><th>Roles</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>alice</strong></td>
+            <td><code>alice123</code></td>
+            <td><span class="badge bg-danger me-1">admin-role</span><span class="badge bg-primary">user-role</span></td>
+          </tr>
+          <tr>
+            <td><strong>bob</strong></td>
+            <td><code>bob123</code></td>
+            <td><span class="badge bg-primary">user-role</span></td>
+          </tr>
+          <tr>
+            <td><strong>charlie</strong></td>
+            <td><code>charlie123</code></td>
+            <td><span class="text-muted">no roles</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>{# /right col #}
+</div>{# /row #}
+{% endblock %}
