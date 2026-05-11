@@ -12,17 +12,38 @@ Responsibilities:
 - Manages users, roles, clients, and realms
 - Exposes a JWKS endpoint so resource servers can verify token signatures
 - Handles token refresh and SSO session management
+- Supports RFC 8693 token exchange (enabled via `KC_FEATURES=preview`)
 
 Key Keycloak concepts used in this demo:
 
 | Concept | Description |
 |---|---|
 | **Realm** | An isolated namespace (`demo`) containing its own users, clients, and roles |
-| **Client** | An application registered with Keycloak (`demo-client`, `service-client`) |
+| **Client** | An application registered with Keycloak |
 | **Confidential client** | Has a `client_secret`; token exchange happens server-side |
 | **Service account** | A non-human identity attached to a client (for Client Credentials) |
 | **Realm role** | A role scoped to the realm (`admin-role`, `user-role`) |
 | **JWKS** | JSON Web Key Set — the Keycloak public keys used to verify JWT signatures |
+
+Clients registered in the `demo` realm:
+
+| Client | Flow | Purpose |
+|--------|------|---------|
+| `demo-client` | Auth Code + Password | Browser login and ROPC testing |
+| `service-client` | Client Credentials | Machine-to-machine demo |
+| `middle-tier-client` | Client Credentials | On-Behalf-Of (RFC 8693) actor |
+| `spiffe-service` | Client Credentials | SPIFFE→OAuth2 bridge service account |
+
+### Keycloak Init (one-shot container)
+
+A Python container (`keycloak-init/setup.py`) that runs once after Keycloak becomes healthy,
+then exits. It configures two things that cannot be expressed in `realm-export.json`:
+
+1. **Fine-grained token-exchange permissions** — enables `middle-tier-client` to perform
+   On-Behalf-Of exchanges against `demo-client` tokens.
+2. **`spiffe-service` client provisioning** — creates the Keycloak client and assigns
+   `user-role` to its service account. Required because Keycloak only imports
+   `realm-export.json` on first boot; subsequent runs skip re-import.
 
 ### Resource Server (port 8001)
 
@@ -43,15 +64,41 @@ stateless and extremely fast.
 
 ### Client Application (port 5000)
 
-A **Flask** web application that demonstrates all three OAuth2 grant types.
+A **Flask** web application that demonstrates all OAuth2 grant types.
 
 It acts as the OAuth2 **client** (not the resource server, not the IdP).
-Its responsibilities:
+Responsibilities:
 - Redirect the user's browser to Keycloak for authentication (Auth Code flow)
 - Exchange the authorization code for tokens (server-side, not in the browser)
 - Store tokens in the server-side Flask session
 - Use the access token to call the Resource Server on behalf of the user
-- Display the raw and decoded JWT for educational purposes
+- Perform On-Behalf-Of token exchange (RFC 8693) via `middle-tier-client`
+- Proxy requests to `spiffe-service` and display the workload identity demo
+
+### SPIFFE Service (port 8002)
+
+A **FastAPI** workload that demonstrates machine identity via **SPIFFE/SPIRE** instead
+of static secrets. See [spiffe-oauth2.md](spiffe-oauth2.md) for a full explanation.
+
+### SPIRE Server
+
+The SPIRE **Certificate Authority and registry**. Stores workload registration entries
+and issues JWT-SVIDs to attested workloads via the SPIRE agent. Runs gRPC on port 8081
+(internal only).
+
+### SPIRE Init (one-shot container)
+
+Generates a **join token** with a fixed agent SPIFFE ID, registers the
+`spiffe://demo.local/spiffe-service` workload entry, and writes the token to a shared
+volume. Exits after completion.
+
+### SPIRE Agent
+
+A node-local daemon that:
+1. Connects to the SPIRE server using the join token (node attestation)
+2. Serves the **SPIRE Workload API** over a unix socket
+3. Attests workloads using the `unix` WorkloadAttestor (by OS UID)
+4. Issues short-lived JWT-SVIDs to attested workloads on demand
 
 ### PostgreSQL (port 5432)
 
@@ -66,14 +113,24 @@ Not accessed directly by the Python applications.
 Host machine
 ├── localhost:5000  → oauth2-client-app
 ├── localhost:8001  → oauth2-resource-server
+├── localhost:8002  → oauth2-spiffe-service
 └── localhost:8080  → oauth2-keycloak
-                         └── keycloak:5432 → oauth2-postgres
 
 Internal Docker network (oauth2-net):
-  oauth2-client-app ──────────────────────▶ oauth2-keycloak:8080  (token exchange)
-  oauth2-client-app ──────────────────────▶ oauth2-resource-server:8001  (API calls)
-  oauth2-resource-server ─────────────────▶ oauth2-keycloak:8080  (JWKS fetch)
+  oauth2-client-app ──────────────────────▶ oauth2-keycloak:8080       (token exchange)
+  oauth2-client-app ──────────────────────▶ oauth2-resource-server:8001 (API calls)
+  oauth2-client-app ──────────────────────▶ oauth2-spiffe-service:8002  (SPIFFE proxy)
+  oauth2-resource-server ─────────────────▶ oauth2-keycloak:8080        (JWKS fetch)
   oauth2-keycloak ─────────────────────────▶ oauth2-postgres:5432
+  oauth2-keycloak-init ───────────────────▶ oauth2-keycloak:8080        (Admin API)
+  oauth2-spiffe-service ──────────────────▶ oauth2-keycloak:8080        (token bridge)
+  oauth2-spiffe-service ──────────────────▶ oauth2-resource-server:8001 (API calls)
+  oauth2-spire-agent ─────────────────────▶ oauth2-spire-server:8081    (node attestation)
+
+Shared unix sockets (Docker named volumes):
+  spire-server-socket: spire-server ↔ spire-init   (admin API)
+  spire-agent-socket:  spire-agent  ↔ spiffe-service (Workload API)
+  spire-tokens:        spire-init → spire-agent       (join token hand-off)
 ```
 
 **Important:** the browser uses `localhost:8080` to reach Keycloak (via port mapping).
@@ -185,7 +242,7 @@ RS256(
 ```
 
 Only Keycloak's private key can produce this signature.
-Any server that has the matching public key (from JWKS) can verify it.
+Any server with the matching public key (from JWKS) can verify it.
 
 ---
 
@@ -201,3 +258,6 @@ This demo intentionally simplifies some things for clarity:
 | Client secret | Hardcoded in compose | Use Docker secrets or a vault |
 | JWKS caching | In-memory, no TTL | Add TTL-based cache with rotation support |
 | PKCE | Not implemented | Add `code_challenge` / `code_verifier` to Auth Code flow |
+| SPIRE KeyManager | `memory` (keys lost on restart) | Cloud KMS or `disk` with encrypted storage |
+| SPIRE NodeAttestor | `join_token` | Platform attestor (`k8s_psat`, `aws_iid`, etc.) |
+| SPIRE WorkloadAttestor | `unix:uid:0` (root match) | Use a non-root UID or more precise selectors |

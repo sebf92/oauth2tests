@@ -193,6 +193,77 @@ def setup_token_exchange(token: str) -> None:
         print("  policy already attached — nothing to do")
 
 
+# ── spiffe-service client ──────────────────────────────────────────────────────
+
+def ensure_spiffe_service_client(token: str) -> None:
+    """
+    Ensure the spiffe-service Keycloak client exists with the correct config.
+
+    Keycloak's --import-realm only fires when the realm is first created, so
+    clients added to realm-export.json after the initial import are not picked
+    up on subsequent runs. This function is idempotent: it creates the client
+    when missing and assigns user-role to its service account.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    existing = httpx.get(
+        f"{base}/clients", headers=h, params={"clientId": "spiffe-service"}, timeout=10
+    ).json()
+
+    if existing:
+        client_id = existing[0]["id"]
+        print(f"  spiffe-service client  id = {client_id} (already exists)")
+    else:
+        r = httpx.post(
+            f"{base}/clients",
+            headers=h,
+            json={
+                "clientId":               "spiffe-service",
+                "secret":                 "spiffe-service-secret",
+                "enabled":                True,
+                "serviceAccountsEnabled": True,
+                "standardFlowEnabled":    False,
+                "directAccessGrantsEnabled": False,
+                "publicClient":           False,
+                "protocol":               "openid-connect",
+                "defaultClientScopes":    ["web-origins", "acr", "profile", "roles", "email"],
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        location = r.headers.get("Location", "")
+        client_id = location.rstrip("/").split("/")[-1]
+        print(f"  spiffe-service client  id = {client_id} (created)")
+
+    # Ensure service account has user-role
+    sa_user = httpx.get(
+        f"{base}/clients/{client_id}/service-account-user", headers=h, timeout=10
+    ).json()
+    sa_user_id = sa_user["id"]
+
+    realm_roles = httpx.get(f"{base}/roles", headers=h, timeout=10).json()
+    user_role   = next((r for r in realm_roles if r["name"] == "user-role"), None)
+    if not user_role:
+        print("  user-role not found in realm — skipping assignment")
+        return
+
+    assigned = httpx.get(
+        f"{base}/users/{sa_user_id}/role-mappings/realm", headers=h, timeout=10
+    ).json()
+    if any(r["name"] == "user-role" for r in assigned):
+        print("  user-role already assigned to spiffe-service service account")
+    else:
+        r = httpx.post(
+            f"{base}/users/{sa_user_id}/role-mappings/realm",
+            headers=h,
+            json=[user_role],
+            timeout=10,
+        )
+        r.raise_for_status()
+        print("  user-role assigned to spiffe-service service account")
+
+
 # ── entry point ────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -201,6 +272,9 @@ def main() -> None:
     token = get_admin_token()
     setup_token_exchange(token)
     print("\n✓ Token exchange setup complete — OBO is ready!")
+    token = get_admin_token()
+    ensure_spiffe_service_client(token)
+    print("\n✓ SPIFFE service client setup complete!")
 
 
 if __name__ == "__main__":

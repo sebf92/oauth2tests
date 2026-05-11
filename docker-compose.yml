@@ -37,6 +37,8 @@ services:
       KC_LOG_LEVEL: INFO
       # Enable preview features for RFC 8693 token exchange (OBO / rescoping demo)
       KC_FEATURES: "preview"
+      # Expose /health/ready so the Docker healthcheck works
+      KC_HEALTH_ENABLED: "true"
     command: start-dev --import-realm
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
@@ -46,7 +48,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready || exit 1"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"status\":' <&3"]
       interval: 15s
       timeout: 10s
       retries: 20
@@ -113,6 +115,7 @@ services:
       MIDDLE_TIER_CLIENT_ID: middle-tier-client
       MIDDLE_TIER_CLIENT_SECRET: middle-tier-client-secret
       RESOURCE_SERVER_URL: http://resource-server:8001
+      SPIFFE_SERVICE_URL: http://spiffe-service:8002
       REDIRECT_URI: http://localhost:5000/auth/callback
       SECRET_KEY: change-this-secret-key-in-production-abc123
       FLASK_ENV: development
@@ -124,9 +127,103 @@ services:
     networks:
       - oauth2-net
 
+  # ── SPIRE Server — issues SVIDs to attested workloads ───────────────────────
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.10.0
+    container_name: oauth2-spire-server
+    volumes:
+      - ./spire/server:/opt/spire/conf/server:ro
+      - spire-server-socket:/tmp/spire-server
+    # ENTRYPOINT is [spire-server, run] — only pass the -config flag here
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck", "-socketPath", "/tmp/spire-server/private/api.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - oauth2-net
+
+  # ── SPIRE Init — creates join token + workload entries ───────────────────────
+  # Runs once, writes the join token to a shared volume, then exits.
+  spire-init:
+    build:
+      context: ./spire/init
+      dockerfile: Dockerfile
+    container_name: oauth2-spire-init
+    volumes:
+      - spire-server-socket:/tmp/spire-server
+      - spire-tokens:/tmp/spire-tokens
+      - ./spire/setup.sh:/opt/spire/setup.sh:ro
+    command: ["/opt/spire/setup.sh"]
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - oauth2-net
+
+  # ── SPIRE Agent — attests workloads, serves Workload API ────────────────────
+  spire-agent:
+    build:
+      context: ./spire/agent-wrapper
+      dockerfile: Dockerfile
+    container_name: oauth2-spire-agent
+    volumes:
+      - ./spire/agent:/opt/spire/conf/agent:ro
+      - spire-tokens:/tmp/spire-tokens:ro
+      - spire-agent-socket:/tmp/spire-agent
+      - ./spire/agent-start.sh:/opt/spire/agent-start.sh:ro
+    command: ["/opt/spire/agent-start.sh"]
+    depends_on:
+      spire-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/tmp/spire-agent/public/api.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - oauth2-net
+
+  # ── SPIFFE Service — workload identity demo ──────────────────────────────────
+  spiffe-service:
+    build:
+      context: ./spiffe-service
+      dockerfile: Dockerfile
+    container_name: oauth2-spiffe-service
+    # Share the SPIRE agent's PID namespace so the unix workload attestor can
+    # resolve the caller's UID via /proc. Without this, SO_PEERCRED returns a PID
+    # in the spiffe-service's separate PID namespace, which the agent can't see.
+    pid: "service:spire-agent"
+    environment:
+      SPIFFE_ENDPOINT_SOCKET: "unix:///tmp/spire-agent/public/api.sock"
+      SPIFFE_TRUST_DOMAIN: demo.local
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_REALM: demo
+      SVC_CLIENT_ID: spiffe-service
+      SVC_CLIENT_SECRET: spiffe-service-secret
+      RESOURCE_SERVER_URL: http://resource-server:8001
+    volumes:
+      - spire-agent-socket:/tmp/spire-agent:ro
+    ports:
+      - "8002:8002"
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    networks:
+      - oauth2-net
+
 networks:
   oauth2-net:
     driver: bridge
 
 volumes:
   postgres_data:
+  spire-server-socket:
+  spire-agent-socket:
+  spire-tokens:

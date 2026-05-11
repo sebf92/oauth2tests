@@ -1,0 +1,333 @@
+{% extends "base.html" %}
+{% block title %}SPIFFE Workload Identity Demo{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted small">
+    <i class="bi bi-arrow-left me-1"></i>Back to home
+  </a>
+</div>
+
+{# ── Title ───────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-success">
+  <h1 class="h4 fw-bold mb-1">
+    <i class="bi bi-fingerprint text-success me-2"></i>SPIFFE Workload Identity → OAuth2
+  </h1>
+  <p class="text-muted mb-0">
+    A container proves its identity to <strong>SPIRE</strong> without any stored secret.
+    The resulting <strong>JWT-SVID</strong> is mapped to a Keycloak service account via the
+    <em>SPIFFE→OAuth2 bridge</em> pattern, producing a standard OAuth2 access token that is
+    then used to call the protected resource server.
+  </p>
+</div>
+
+{% if error %}
+<div class="alert alert-danger d-flex align-items-start gap-2">
+  <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+  <div>
+    <strong>Could not reach spiffe-service:</strong> {{ error }}
+    <div class="small mt-1">Make sure all SPIRE containers are healthy:
+      <code>docker compose ps spire-server spire-agent spiffe-service</code>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="row g-4">
+
+{# ── LEFT: How it works ───────────────────────────────────────────────────── #}
+<div class="col-lg-5">
+  <h5 class="section-title">How SPIFFE + OAuth2 Works</h5>
+  <div class="card shadow-sm mb-4">
+    <div class="card-body small">
+      <ol class="mb-3">
+        <li class="mb-2">
+          <strong>SPIRE attests the workload</strong> — the SPIRE agent identifies the
+          container using OS-level selectors (unix UID) and checks it matches a registered
+          entry on the SPIRE server.
+        </li>
+        <li class="mb-2">
+          <strong>JWT-SVID issued</strong> — SPIRE issues a short-lived
+          (<code>exp - iat ≈ 5 min</code>) signed JWT whose <code>sub</code> is a SPIFFE URI
+          (<code>spiffe://demo.local/spiffe-service</code>).
+          No password or API key was ever stored.
+        </li>
+        <li class="mb-2">
+          <strong>SPIFFE→OAuth2 bridge</strong> — the validated SPIFFE ID is mapped to a
+          Keycloak service account. Keycloak issues a standard OAuth2 access token via
+          <code>client_credentials</code>.
+          <br>
+          <span class="text-muted">(With Keycloak 26.4+ this step is eliminated — the JWT-SVID
+          is presented directly as a <code>client_assertion</code> per RFC 7523.)</span>
+        </li>
+        <li class="mb-2">
+          <strong>Protected API called</strong> — the resource server validates the OAuth2
+          token, confirms the bearer has <code>user-role</code>, and returns the product list.
+        </li>
+      </ol>
+      <div class="bg-light rounded p-2 font-monospace" style="font-size:.75rem">
+        <div class="text-success">SPIRE Workload API</div>
+        <div class="text-secondary">→ JWT-SVID (spiffe://demo.local/spiffe-service)</div>
+        <div class="mt-1 text-success">SPIFFE→OAuth2 Bridge</div>
+        <div class="text-secondary">→ <span class="text-primary">grant_type=client_credentials</span></div>
+        <div class="text-secondary">→ access_token (OAuth2)</div>
+        <div class="mt-1 text-success">Resource Server</div>
+        <div class="text-secondary">→ Authorization: Bearer &lt;access_token&gt;</div>
+        <div class="text-secondary">→ 200 OK (products)</div>
+      </div>
+    </div>
+  </div>
+
+  {# Why SPIFFE? #}
+  <h5 class="section-title">Why SPIFFE Instead of Secrets?</h5>
+  <div class="card shadow-sm">
+    <div class="card-body small">
+      <table class="table table-sm table-borderless mb-0">
+        <thead><tr>
+          <th class="text-muted fw-normal" style="width:50%">Client Credentials</th>
+          <th class="text-muted fw-normal">SPIFFE / SPIRE</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td><i class="bi bi-x-circle text-danger me-1"></i>Secret stored in env var</td>
+            <td><i class="bi bi-check-circle text-success me-1"></i>No stored secret</td>
+          </tr>
+          <tr>
+            <td><i class="bi bi-x-circle text-danger me-1"></i>Long-lived credential</td>
+            <td><i class="bi bi-check-circle text-success me-1"></i>Short-lived SVID (~5 min)</td>
+          </tr>
+          <tr>
+            <td><i class="bi bi-x-circle text-danger me-1"></i>Secret rotation is manual</td>
+            <td><i class="bi bi-check-circle text-success me-1"></i>Automatic renewal</td>
+          </tr>
+          <tr>
+            <td><i class="bi bi-x-circle text-danger me-1"></i>Identity based on "what you know"</td>
+            <td><i class="bi bi-check-circle text-success me-1"></i>Identity based on "what you are"</td>
+          </tr>
+          <tr>
+            <td><i class="bi bi-dash-circle text-secondary me-1"></i>Secret can be leaked / copied</td>
+            <td><i class="bi bi-check-circle text-success me-1"></i>SVID bound to attested workload</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# ── RIGHT: Step-by-step results ─────────────────────────────────────────── #}
+<div class="col-lg-7">
+  <h5 class="section-title">
+    Demo Result
+    {% if demo.get('overall_success') %}
+      <span class="badge bg-success ms-2">All steps passed</span>
+    {% elif demo %}
+      <span class="badge bg-danger ms-2">Failed</span>
+    {% endif %}
+  </h5>
+
+  {% if not demo and not error %}
+    <div class="alert alert-secondary">No data returned from spiffe-service.</div>
+  {% endif %}
+
+  {% if demo.get('spiffe_id') %}
+  <div class="alert alert-success py-2 small mb-3">
+    <i class="bi bi-fingerprint me-1"></i>
+    <strong>Attested identity:</strong> <code>{{ demo.spiffe_id }}</code>
+  </div>
+  {% endif %}
+
+  {% set steps = demo.get('steps', {}) %}
+
+  {# Step 1: Workload API #}
+  {% set s1 = steps.get('step_1_workload_api', {}) %}
+  {% if s1 %}
+  <div class="card mb-3 shadow-sm border-start border-4 {% if s1.get('success') %}border-success{% else %}border-danger{% endif %}">
+    <div class="card-body">
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-{% if s1.get('success') %}success{% else %}danger{% endif %} me-2">Step 1</span>
+        <strong class="small">{{ s1.get('title', 'SPIRE Workload API') }}</strong>
+        {% if s1.get('success') %}
+          <i class="bi bi-check-circle-fill text-success ms-auto"></i>
+        {% else %}
+          <i class="bi bi-x-circle-fill text-danger ms-auto"></i>
+        {% endif %}
+      </div>
+      <p class="text-muted small mb-2">{{ s1.get('description', '') }}</p>
+      {% if s1.get('error') %}
+        <div class="alert alert-danger py-1 small mb-0">{{ s1.error }}</div>
+      {% endif %}
+      {% if s1.get('spiffe_id') %}
+        <div class="bg-light rounded p-2 small font-monospace">
+          <div><span class="text-muted">sub / spiffe_id:</span> <strong>{{ s1.spiffe_id }}</strong></div>
+          {% if s1.get('jwt_payload') %}
+            {% if s1.jwt_payload.get('iss') %}
+            <div><span class="text-muted">iss:</span> {{ s1.jwt_payload.iss }}</div>
+            {% endif %}
+            {% if s1.jwt_payload.get('aud') %}
+            <div><span class="text-muted">aud:</span> {{ s1.jwt_payload.aud }}</div>
+            {% endif %}
+            {% if s1.jwt_payload.get('iat_human') %}
+            <div><span class="text-muted">iat:</span> {{ s1.jwt_payload.iat_human }}</div>
+            {% endif %}
+            {% if s1.jwt_payload.get('exp_human') %}
+            <div><span class="text-muted">exp:</span> {{ s1.jwt_payload.exp_human }}</div>
+            {% endif %}
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# Step 2: Identity summary #}
+  {% set s2 = steps.get('step_2_identity_summary', {}) %}
+  {% if s2 %}
+  <div class="card mb-3 shadow-sm border-start border-4 {% if s2.get('success') %}border-success{% else %}border-danger{% endif %}">
+    <div class="card-body">
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-{% if s2.get('success') %}success{% else %}danger{% endif %} me-2">Step 2</span>
+        <strong class="small">{{ s2.get('title', 'SPIFFE Identity') }}</strong>
+        {% if s2.get('success') %}
+          <i class="bi bi-check-circle-fill text-success ms-auto"></i>
+        {% else %}
+          <i class="bi bi-x-circle-fill text-danger ms-auto"></i>
+        {% endif %}
+      </div>
+      <p class="text-muted small mb-2">{{ s2.get('description', '') }}</p>
+      {% if s2.get('note') %}
+        <div class="alert alert-info py-1 small mb-2">
+          <i class="bi bi-info-circle me-1"></i>{{ s2.note }}
+        </div>
+      {% endif %}
+      {% if s2.get('spiffe_id') %}
+        <div class="bg-light rounded p-2 small font-monospace">
+          <div><span class="text-muted">identity:</span> <strong class="text-success">{{ s2.spiffe_id }}</strong></div>
+          {% if s2.get('issued_at') %}<div><span class="text-muted">issued:</span> {{ s2.issued_at }}</div>{% endif %}
+          {% if s2.get('expires_at') %}<div><span class="text-muted">expires:</span> {{ s2.expires_at }}</div>{% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# Step 3: OAuth2 bridge #}
+  {% set s3 = steps.get('step_3_oauth2_bridge', {}) %}
+  {% if s3 %}
+  <div class="card mb-3 shadow-sm border-start border-4 {% if s3.get('success') %}border-success{% else %}border-danger{% endif %}">
+    <div class="card-body">
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-{% if s3.get('success') %}success{% else %}danger{% endif %} me-2">Step 3</span>
+        <strong class="small">{{ s3.get('title', 'SPIFFE→OAuth2 Bridge') }}</strong>
+        {% if s3.get('success') %}
+          <i class="bi bi-check-circle-fill text-success ms-auto"></i>
+        {% else %}
+          <i class="bi bi-x-circle-fill text-danger ms-auto"></i>
+        {% endif %}
+      </div>
+      <p class="text-muted small mb-2">{{ s3.get('description', '') }}</p>
+      {% if s3.get('error') %}
+        <div class="alert alert-danger py-1 small mb-2">{{ s3.error }}</div>
+      {% endif %}
+      {% if s3.get('success') %}
+        <div class="bg-light rounded p-2 small font-monospace mb-2">
+          <div><span class="text-muted">mapped_client:</span> <strong>{{ s3.mapped_client_id }}</strong></div>
+          <div><span class="text-muted">token_type:</span> {{ s3.token_type }}</div>
+          <div><span class="text-muted">expires_in:</span> {{ s3.expires_in }}s</div>
+          <div><span class="text-muted">token_url:</span> {{ s3.keycloak_token_url }}</div>
+        </div>
+        {% if s3.get('access_token_claims') %}
+        <div class="small text-muted mb-1">OAuth2 access token claims:</div>
+        <div class="bg-light rounded p-2 small font-monospace" style="max-height:180px;overflow-y:auto">
+          {% for k, v in s3.access_token_claims.items() %}
+            {% if k not in ('iat', 'exp', 'auth_time', 'nbf') %}
+            <div>
+              <span class="text-muted">{{ k }}:</span>
+              {% if v is mapping %}
+                <span class="text-primary">{{ v | tojson }}</span>
+              {% else %}
+                <strong>{{ v }}</strong>
+              {% endif %}
+            </div>
+            {% endif %}
+          {% endfor %}
+          {% if s3.access_token_claims.get('exp_human') %}
+          <div><span class="text-muted">exp:</span> {{ s3.access_token_claims.exp_human }}</div>
+          {% endif %}
+        </div>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# Step 4: Resource server #}
+  {% set s4 = steps.get('step_4_resource_server', {}) %}
+  {% if s4 %}
+  <div class="card mb-3 shadow-sm border-start border-4 {% if s4.get('success') %}border-success{% else %}border-danger{% endif %}">
+    <div class="card-body">
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-{% if s4.get('success') %}success{% else %}danger{% endif %} me-2">Step 4</span>
+        <strong class="small">{{ s4.get('title', 'Resource Server API Call') }}</strong>
+        <span class="badge bg-{% if s4.get('success') %}success{% else %}danger{% endif %} ms-auto">
+          HTTP {{ s4.get('status_code', '?') }}
+        </span>
+      </div>
+      <p class="text-muted small mb-2">{{ s4.get('description', '') }}</p>
+      {% if s4.get('url') %}
+        <div class="small text-muted mb-2">
+          <code>GET {{ s4.url }}</code>
+        </div>
+      {% endif %}
+      {% if s4.get('data') %}
+        <div class="bg-light rounded p-2 small font-monospace" style="max-height:200px;overflow-y:auto">
+          {{ s4.data | tojson(indent=2) }}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# Retry button #}
+  <div class="d-grid mt-2">
+    <a href="/auth/spiffe" class="btn btn-outline-success">
+      <i class="bi bi-arrow-clockwise me-1"></i>Run Demo Again
+    </a>
+  </div>
+</div>
+
+</div>{# /row #}
+
+{# ── Architecture note ────────────────────────────────────────────────────────── #}
+<div class="card mt-4 bg-light border-0 shadow-sm">
+  <div class="card-body small">
+    <h6 class="fw-semibold mb-2"><i class="bi bi-diagram-3 me-1 text-secondary"></i>Architecture note: Keycloak 24 vs 26.4+</h6>
+    <div class="row g-3">
+      <div class="col-md-6">
+        <div class="fw-semibold text-muted mb-1">This demo — Keycloak 24 (bridge pattern)</div>
+        <div class="font-monospace bg-white rounded p-2" style="font-size:.72rem">
+          <div class="text-success">1. SPIRE issues JWT-SVID</div>
+          <div class="text-secondary">   sub: spiffe://demo.local/spiffe-service</div>
+          <div class="text-success mt-1">2. Bridge: validate SVID locally</div>
+          <div class="text-secondary">   SPIFFE ID → (client_id, client_secret)</div>
+          <div class="text-success mt-1">3. POST /token  grant_type=client_credentials</div>
+          <div class="text-secondary">   ← access_token (OAuth2)</div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="fw-semibold text-muted mb-1">Future — Keycloak 26.4+ (RFC 7523 direct)</div>
+        <div class="font-monospace bg-white rounded p-2" style="font-size:.72rem">
+          <div class="text-success">1. SPIRE issues JWT-SVID</div>
+          <div class="text-secondary">   sub: spiffe://demo.local/spiffe-service</div>
+          <div class="text-success mt-1">2. POST /token</div>
+          <div class="text-secondary">   grant_type=client_credentials</div>
+          <div class="text-secondary">   client_assertion_type=jwt-bearer</div>
+          <div class="text-secondary">   client_assertion=&lt;JWT-SVID&gt;</div>
+          <div class="text-secondary mt-1">   ← access_token (OAuth2)</div>
+          <div class="text-muted">(No bridge, no stored secret)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

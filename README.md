@@ -1,7 +1,8 @@
 # OAuth2 + JWT with Keycloak — Learning Demo
 
-A fully containerised environment to understand how **OAuth2**, **JWT**, and **Keycloak** work together.
-Three grant types are demonstrated end-to-end, from token issuance to protected API access.
+A fully containerised environment to understand how **OAuth2**, **JWT**, **SPIFFE/SPIRE**, and
+**Keycloak** work together. Five flows are demonstrated end-to-end, from browser login through
+workload identity to protected API access.
 
 ---
 
@@ -18,29 +19,36 @@ Browser / curl
 │ • Auth Code flow    │        │ GET /api/public   (open)     │
 │ • Password grant    │        │ GET /api/products (any token)│
 │ • Client creds      │        │ GET /api/users/me (user-role)│
-└──────┬──────────────┘        │ GET /api/users    (admin)    │
-       │                       │ GET /api/admin/*  (admin)    │
-       │ token exchange        └──────────────┬───────────────┘
-       │ (server-to-server)                   │ JWKS fetch
-       ▼                                      ▼
-┌─────────────────────────────────────────────────────────┐
-│   Keycloak :8080   (realm: demo)                        │
-│                                                         │
-│ • Issues JWT access tokens (RS256)                      │
-│ • Manages users, roles, clients                         │
-│ • Exposes JWKS public-key endpoint                      │
-└──────────────────────────┬──────────────────────────────┘
-                           │
-                    ┌──────▼──────┐
-                    │  PostgreSQL  │
-                    │  :5432       │
-                    └─────────────┘
+│ • On-Behalf-Of      │        │ GET /api/users    (admin)    │
+│ • SPIFFE demo       │        │ GET /api/admin/*  (admin)    │
+└──────┬──────────────┘        └──────────────┬───────────────┘
+       │ token exchange                        │ JWKS fetch
+       │ (server-to-server)                    ▼
+       ▼                       ┌─────────────────────────────────────────┐
+┌─────────────────────────────────────────────────────────────────────┐  │
+│   Keycloak :8080   (realm: demo)                                    │  │
+│                                                                     │  │
+│ • Issues JWT access tokens (RS256)                                  │  │
+│ • Manages users, roles, clients                                     │  │
+│ • RFC 8693 token exchange (preview feature)                         │  │
+└──────────────────────────┬──────────────────────────────────────────┘  │
+                           │ Postgres                                     │
+                    ┌──────▼──────┐                                       │
+                    │  PostgreSQL  │                                       │
+                    │  :5432       │                                       │
+                    └─────────────┘                                       │
+
+SPIFFE / SPIRE stack (workload identity):
+                                                                          │
+┌──────────────┐  gRPC :8081  ┌─────────────────┐   Workload API  ┌──────▼─────────┐
+│ spire-server │◄─────────────│  spire-agent     │────unix socket──│ spiffe-service │
+│  CA/registry │              │  (attestation)   │                 │  FastAPI :8002 │
+└──────────────┘              └─────────────────┘                 └────────────────┘
 ```
 
 **Key networking rule:** the browser always talks to Keycloak via `http://localhost:8080`.
 Server-side containers talk to each other via the Docker network (`http://keycloak:8080`).
-Keycloak is configured with `KC_HOSTNAME=localhost` so all JWT `iss` claims equal
-`http://localhost:8080/realms/demo`, regardless of which container made the token request.
+`KC_HOSTNAME=localhost` ensures all JWT `iss` claims equal `http://localhost:8080/realms/demo`.
 
 ---
 
@@ -49,7 +57,7 @@ Keycloak is configured with `KC_HOSTNAME=localhost` so all JWT `iss` claims equa
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose v2)
-- Ports **8080**, **8001**, and **5000** free on your machine
+- Ports **8080**, **8001**, **8002**, and **5000** free on your machine
 
 ### 1 — Start the stack
 
@@ -58,13 +66,14 @@ cd oauth2sample
 docker compose up --build
 ```
 
-First boot takes **2–4 minutes**: PostgreSQL initialises, then Keycloak imports the realm
-and generates RSA key pairs before accepting requests.
+First boot takes **3–5 minutes**: PostgreSQL initialises, Keycloak imports the realm and
+generates RSA key pairs, SPIRE bootstraps its CA, and `keycloak-init` configures token
+exchange permissions via the Admin API.
 
-Watch for this line in the logs to know Keycloak is ready:
+Watch for all services to show `healthy` or `Exited (0)`:
 
-```
-oauth2-keycloak  | ... Keycloak 24.0 ... started in ...
+```bash
+docker compose ps
 ```
 
 ### 2 — Open the demo app
@@ -73,6 +82,7 @@ oauth2-keycloak  | ... Keycloak 24.0 ... started in ...
 |---|---|
 | **Client App** (Flask) | http://localhost:5000 |
 | **Resource Server** (FastAPI docs) | http://localhost:8001/docs |
+| **SPIFFE Service** (FastAPI) | http://localhost:8002 |
 | **Keycloak Admin Console** | http://localhost:8080/admin (`admin` / `admin`) |
 
 ### 3 — Try the flows
@@ -81,7 +91,9 @@ oauth2-keycloak  | ... Keycloak 24.0 ... started in ...
 2. Click **"Login with Authorization Code"** → log in as `alice` / `alice123`
 3. Click **"Inspect Token"** to see the decoded JWT
 4. Click any API button to see role-based access in action
-5. Log out, log in as `bob` / `bob123` (user-role only), try the admin endpoint → 403
+5. Try **"On-Behalf-Of"** under Advanced Token Exchange
+6. Click **"Run SPIFFE Demo"** to see workload identity without secrets
+7. Log out, log in as `bob` / `bob123` (user-role only), try the admin endpoint → 403
 
 ---
 
@@ -92,24 +104,27 @@ oauth2-keycloak  | ... Keycloak 24.0 ... started in ...
 | `alice` | `alice123` | `admin-role`, `user-role` | Everything |
 | `bob` | `bob123` | `user-role` | Products, /me, public |
 | `charlie` | `charlie123` | _(none)_ | Public only |
-| `service-client` | — | `user-role` (service account) | Client Credentials flow |
+
+**Service accounts** (no password — machine identity only):
+
+| Client ID | Secret | Roles | Used for |
+|---|---|---|---|
+| `service-client` | `service-client-secret` | `user-role` | Client Credentials flow |
+| `middle-tier-client` | `middle-tier-client-secret` | — | On-Behalf-Of exchange |
+| `spiffe-service` | `spiffe-service-secret` | `user-role` | SPIFFE→OAuth2 bridge |
 
 ---
 
-## OAuth2 Grant Types Demonstrated
+## Flows Demonstrated
 
-### 1. Authorization Code Flow (recommended for web apps)
+### 1. Authorization Code (recommended for web apps)
 
 ```
 User → Client App → Keycloak login page → code → Client App → tokens
 ```
 
-1. User clicks "Login" → app builds an authorization URL with `response_type=code`
-2. Browser redirects to Keycloak; user enters credentials
-3. Keycloak redirects back to `/auth/callback?code=xxx&state=yyy`
-4. App verifies the `state` parameter (CSRF protection)
-5. App exchanges the code for tokens via a **server-side** POST to Keycloak
-6. Tokens are stored in the Flask session (never exposed to the browser)
+The browser never sees tokens directly. The short-lived code is exchanged server-side.
+Includes `state` (CSRF) and `nonce` (replay) protection.
 
 ### 2. Resource Owner Password Credentials / ROPC (legacy)
 
@@ -117,8 +132,8 @@ User → Client App → Keycloak login page → code → Client App → tokens
 username + password → POST /token → access_token
 ```
 
-Credentials are sent directly to the token endpoint. Simpler but the client app
-sees the password. Useful for testing/scripting; avoid in production.
+Credentials are sent directly to the token endpoint. Avoid in production; useful for
+testing and scripting.
 
 ### 3. Client Credentials (machine-to-machine)
 
@@ -126,14 +141,34 @@ sees the password. Useful for testing/scripting; avoid in production.
 client_id + client_secret → POST /token → access_token (no user)
 ```
 
-The application authenticates as itself. No human user involved.
-The resulting token contains the service account identity, not a user's.
+The application authenticates as itself. Produces a service account token, not a user token.
+
+### 4. On-Behalf-Of / Token Exchange (RFC 8693)
+
+```
+User token + middle-tier-client credentials → POST /token → delegated token
+```
+
+`middle-tier-client` exchanges Alice's token for a new token scoped to itself, preserving
+the user's identity (`sub`) while switching the acting client (`azp`). Requires the
+`KC_FEATURES=preview` flag and fine-grained authorization policies on `demo-client`.
+
+### 5. SPIFFE Workload Identity
+
+```
+SPIRE attests container → JWT-SVID → OAuth2 bridge → access_token
+```
+
+`spiffe-service` proves its identity to the SPIRE agent using OS-level attributes (unix UID),
+receives a short-lived JWT-SVID (~5 min), maps it to a Keycloak service account, and uses
+the resulting OAuth2 token to call the resource server — no static secret ever stored.
+See [docs/spiffe-oauth2.md](docs/spiffe-oauth2.md) for details.
 
 ---
 
 ## JWT Validation (Resource Server)
 
-Every protected endpoint in the Resource Server performs these checks:
+Every protected endpoint performs these checks:
 
 ```
 Authorization: Bearer <token>
@@ -154,15 +189,19 @@ If any check fails → **401 Unauthorized** or **403 Forbidden**.
 
 ## Keycloak Realm Configuration
 
-The realm is auto-imported from [`keycloak/realm-export.json`](keycloak/realm-export.json) on first boot.
+The realm is auto-imported from [`keycloak/realm-export.json`](keycloak/realm-export.json)
+on first boot. Post-import configuration (token-exchange permissions, `spiffe-service` client
+provisioning) is handled by the `keycloak-init` container on every startup.
 
 | Setting | Value |
 |---|---|
 | Realm | `demo` |
-| Token lifetime | 5 minutes (300 s) |
+| Token lifetime | 30 minutes |
 | Signature algorithm | RS256 |
 | Client `demo-client` | Auth Code + Password flows, confidential |
 | Client `service-client` | Client Credentials only, confidential |
+| Client `middle-tier-client` | Client Credentials only — OBO actor |
+| Client `spiffe-service` | Client Credentials only — SPIFFE bridge |
 
 ### Roles
 
@@ -194,6 +233,9 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8001/api/products
 
 # Decode token locally (without verification)
 echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+
+# SPIFFE service demo endpoint
+curl http://localhost:8002/demo | jq .overall_success
 ```
 
 ---
@@ -208,39 +250,65 @@ docker compose down
 docker compose down -v
 ```
 
+After `docker compose down -v`, a clean `docker compose up --build` will:
+1. Re-import the realm from `realm-export.json`
+2. Run `keycloak-init` to configure token exchange and provision the `spiffe-service` client
+3. Bootstrap SPIRE (new CA keys, new join token)
+
 ---
 
 ## Troubleshooting
 
 ### "invalid_token" or 401 after starting
 
-Keycloak may still be importing the realm. Wait 30 s and retry.
+Keycloak may still be importing the realm. Wait 30 s and retry. Check with:
+
+```bash
+docker compose ps keycloak
+```
 
 ### 401 with "Invalid token issuer"
 
 The `iss` claim in your token does not match `KEYCLOAK_ISSUER` in the resource server.
-Check what issuer your token actually contains:
+Ensure `KC_HOSTNAME=localhost` is set in `docker-compose.yml` and restart Keycloak.
 
 ```bash
 echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .iss
+# Should print: "http://localhost:8080/realms/demo"
 ```
-
-If it says `http://keycloak:8080/realms/demo` instead of `http://localhost:8080/realms/demo`,
-ensure `KC_HOSTNAME=localhost` is set in `docker-compose.yml` and restart Keycloak.
 
 ### Service account has no roles (Client Credentials → 403)
 
-The service account user import may have been skipped if the realm already existed.
-Fix manually:
+The `keycloak-init` container configures service accounts on every boot. If it failed:
 
-1. Open http://localhost:8080/admin → realm `demo`
-2. **Clients** → `service-client` → **Service account roles** tab
-3. Assign `user-role` from the **Available roles** list
+```bash
+docker compose logs keycloak-init
+```
+
+To re-run it: `docker compose up keycloak-init`.
+
+### SPIFFE demo shows error
+
+Check all SPIRE containers are healthy and `spiffe-service` is running:
+
+```bash
+docker compose ps spire-server spire-agent spiffe-service
+docker compose logs spiffe-service --tail 30
+```
+
+If `spire-agent` is unhealthy, check `docker compose logs spire-agent`. The agent needs
+`spire-init` to complete first (writes the join token).
+
+If `spiffe-service` is stuck in `Created`, run:
+
+```bash
+docker compose up -d keycloak-init spiffe-service
+```
 
 ### Port conflict
 
-Edit the `ports` section in `docker-compose.yml` to use different host ports.
-If you change the Keycloak port, also update `KEYCLOAK_EXTERNAL_URL` and `KEYCLOAK_ISSUER`.
+Edit the `ports` section in `docker-compose.yml`. If you change the Keycloak port, also
+update `KEYCLOAK_EXTERNAL_URL` and `KEYCLOAK_ISSUER` in the relevant services.
 
 ---
 
@@ -248,26 +316,49 @@ If you change the Keycloak port, also update `KEYCLOAK_EXTERNAL_URL` and `KEYCLO
 
 ```
 oauth2sample/
-├── docker-compose.yml          # All four services
+├── docker-compose.yml              # Full 9-service stack
 ├── keycloak/
-│   └── realm-export.json       # Auto-imported realm (users, clients, roles)
+│   └── realm-export.json           # Auto-imported realm (users, clients, roles)
+├── keycloak-init/
+│   ├── Dockerfile
+│   └── setup.py                    # Configures token-exchange + spiffe-service client
 ├── resource-server/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── main.py                 # FastAPI + JWT validation
+│   └── main.py                     # FastAPI + JWT validation
 ├── client-app/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── app.py                  # Flask + OAuth2 flows
+│   ├── app.py                      # Flask + all OAuth2 flows
 │   └── templates/
 │       ├── base.html
 │       ├── index.html
 │       ├── password_grant.html
 │       ├── api_result.html
-│       └── token_inspect.html
+│       ├── token_inspect.html
+│       ├── token_exchange_obo.html
+│       ├── token_exchange_rescope.html
+│       └── spiffe_demo.html
+├── spiffe-service/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── main.py                     # FastAPI — SPIFFE workload identity demo
+├── spire/
+│   ├── server/
+│   │   └── server.conf             # SPIRE server configuration
+│   ├── agent/
+│   │   └── agent.conf              # SPIRE agent configuration
+│   ├── init/
+│   │   └── Dockerfile              # Alpine + spire-server binary (one-shot setup)
+│   ├── agent-wrapper/
+│   │   └── Dockerfile              # Alpine + spire-agent binary
+│   ├── setup.sh                    # Creates join token + workload entry
+│   └── agent-start.sh              # Waits for token, starts agent
 └── docs/
     ├── architecture.md
-    └── oauth2-flows.md
+    ├── oauth2-flows.md
+    ├── obo-manual-setup.md
+    └── spiffe-oauth2.md
 ```
 
 ---
@@ -275,7 +366,10 @@ oauth2sample/
 ## Further reading
 
 - [OAuth 2.0 RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749)
+- [RFC 8693 — Token Exchange](https://datatracker.ietf.org/doc/html/rfc8693)
 - [OpenID Connect Core](https://openid.net/specs/openid-connect-core-1_0.html)
 - [JSON Web Token RFC 7519](https://datatracker.ietf.org/doc/html/rfc7519)
+- [SPIFFE Specification](https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE.md)
+- [SPIRE Documentation](https://spiffe.io/docs/latest/spire-about/)
 - [Keycloak Documentation](https://www.keycloak.org/documentation)
 - [jwt.io](https://jwt.io) — online JWT decoder and verifier

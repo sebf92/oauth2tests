@@ -110,6 +110,35 @@
       ]
     },
     {
+      "clientId": "spiffe-service",
+      "name": "SPIFFE Service Account",
+      "description": "Service account for the SPIFFE workload identity demo (machine-to-machine)",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "spiffe-service-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ]
+    },
+    {
       "clientId": "service-client",
       "name": "Service Account Client",
       "description": "Demonstrates Client Credentials flow (machine-to-machine)",
@@ -187,6 +216,12 @@
       "username": "service-account-middle-tier-client",
       "enabled": true,
       "serviceAccountClientId": "middle-tier-client",
+      "realmRoles": ["user-role"]
+    },
+    {
+      "username": "service-account-spiffe-service",
+      "enabled": true,
+      "serviceAccountClientId": "spiffe-service",
       "realmRoles": ["user-role"]
     }
   ]

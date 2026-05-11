@@ -85,13 +85,13 @@ token endpoint. Here the actor is `middle-tier-client`, which presents its
 1. In the permission editor, click **"Create policy"** → choose **Client**.
 2. Fill in:
 
-   | Field              | Value                             |
-   |--------------------|-----------------------------------|
-   | Name               | `allow-middle-tier-exchange`      |
-   | Description        | *(optional, for documentation)*   |
-   | Clients            | `middle-tier-client`              |
-   | Logic              | Positive                          |
-   | Decision strategy  | Unanimous                         |
+   | Field              | Value                                    |
+   |--------------------|------------------------------------------|
+   | Name               | `allow-middle-tier-token-exchange`       |
+   | Description        | *(optional, for documentation)*          |
+   | Clients            | `middle-tier-client`                     |
+   | Logic              | Positive                                 |
+   | Decision strategy  | Unanimous                                |
 
 3. Click **Save**.
 
@@ -107,7 +107,7 @@ token endpoint. Here the actor is `middle-tier-client`, which presents its
 
 After saving the policy, Keycloak redirects you back to the permission editor.
 
-1. In the **Policies** field, select `allow-middle-tier-exchange`.
+1. In the **Policies** field, select `allow-middle-tier-token-exchange`.
 2. Leave **"Apply to resource type"** toggled **OFF**.
    (Turning it ON would allow `middle-tier-client` to exchange tokens from *any* client
    in the realm — far broader than needed.)
@@ -179,9 +179,23 @@ The exchange should now succeed and return a new token where:
 
 ## Automation
 
-All of the above is automated by the `keycloak-init` container (steps 2–5) and the
-`protocolMappers` entry in `realm-export.json` (step 6) on a clean `docker compose up --build`.
+All of the above is automated by the `keycloak-init` container on every `docker compose up`:
+
+- **Steps 2–5** are handled by `setup_token_exchange()` in `keycloak-init/setup.py`.
+- **Step 6** (the audience mapper) is declared in `keycloak/realm-export.json` via
+  `protocolMappers` — it is applied during the initial realm import.
+- The `spiffe-service` Keycloak client (a separate concern) is also provisioned by
+  `keycloak-init` via `ensure_spiffe_service_client()`, which creates the client and assigns
+  `user-role` to its service account if they do not already exist. This handles the case
+  where the realm existed before `spiffe-service` was added to `realm-export.json`.
+
 The manual steps are only required when:
 
-- The `keycloak-init` container fails (check with `docker compose logs keycloak-init`)
+- The `keycloak-init` container failed — check with `docker compose logs keycloak-init`
 - You wiped the Postgres volume and are re-configuring a running stack without rebuilding
+
+To force `keycloak-init` to re-run:
+
+```bash
+docker compose up keycloak-init
+```

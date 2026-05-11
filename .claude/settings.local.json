@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(docker compose *)",
+      "Bash(docker exec *)",
+      "Bash(curl -s http://localhost:8002/demo)",
+      "Bash(python -m json.tool)",
+      "PowerShell(docker exec oauth2-spiffe-service ls /tmp/spire-agent/public/ 2>&1)",
+      "PowerShell(Start-Sleep -Seconds 3; $r = Invoke-WebRequest -Uri http://localhost:8002/demo -UseBasicParsing; $r.Content)",
+      "PowerShell($token = \\(Invoke-WebRequest -Uri \"http://localhost:8080/realms/master/protocol/openid-connect/token\" -Method Post -Body \"grant_type=password&client_id=admin-cli&username=admin&password=admin\" -ContentType \"application/x-www-form-urlencoded\" -UseBasicParsing\\).Content | ConvertFrom-Json | Select-Object -ExpandProperty access_token; $clients = \\(Invoke-WebRequest -Uri \"http://localhost:8080/admin/realms/demo/clients?clientId=spiffe-service\" -Headers @{Authorization=\"Bearer $token\"} -UseBasicParsing\\).Content | ConvertFrom-Json; $clients | Select-Object clientId, enabled, serviceAccountsEnabled, secret)",
+      "PowerShell($token = \\(Invoke-WebRequest -Uri \"http://localhost:8080/realms/master/protocol/openid-connect/token\" -Method Post -Body \"grant_type=password&client_id=admin-cli&username=admin&password=admin\" -ContentType \"application/x-www-form-urlencoded\" -UseBasicParsing\\).Content | ConvertFrom-Json | Select-Object -ExpandProperty access_token; $resp = Invoke-WebRequest -Uri \"http://localhost:8080/admin/realms/demo/clients\" -Headers @{Authorization=\"Bearer $token\"} -UseBasicParsing; $resp.Content | ConvertFrom-Json | ForEach-Object { $_.clientId })",
+      "mcp__Claude_in_Chrome__tabs_context_mcp"
+    ]
+  }
+}

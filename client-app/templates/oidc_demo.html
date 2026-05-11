@@ -1,0 +1,504 @@
+{% extends "base.html" %}
+{% block title %}OIDC Identity Layer{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted small">
+    <i class="bi bi-arrow-left me-1"></i>Back to home
+  </a>
+</div>
+
+{# ── Title ───────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-purple">
+  <h1 class="h4 fw-bold mb-1">
+    <i class="bi bi-person-badge text-purple me-2" style="color:#6f42c1"></i>OpenID Connect — Identity Layer
+  </h1>
+  <p class="text-muted mb-0">
+    <strong>OpenID Connect (OIDC)</strong> adds a thin identity layer on top of OAuth2.
+    Where OAuth2 only answers <em>"can this client access that resource?"</em>, OIDC also answers
+    <em>"who is the user?"</em> — via the <code>id_token</code>, the UserInfo endpoint, and
+    a standardised Discovery document.
+  </p>
+</div>
+
+{% if not has_id_token %}
+<div class="alert alert-info mb-4">
+  <i class="bi bi-info-circle-fill me-2"></i>
+  <strong>No id_token in this session.</strong>
+  You are logged in via <strong>{{ flow | replace('_', ' ') | title }}</strong>, which does not produce
+  an <code>id_token</code> because there is no interactive user session.
+  The <strong>UserInfo</strong> endpoint still works with the access token.
+  Log in via <a href="/auth/authorization-code" class="alert-link">Authorization Code</a> or
+  <a href="/auth/password" class="alert-link">Password Grant</a> to see the id_token.
+</div>
+{% endif %}
+
+<div class="row g-4">
+
+{# ── LEFT ── Concepts ──────────────────────────────────────────────────────── #}
+<div class="col-lg-5">
+
+  <h5 class="section-title">OAuth2 vs OIDC</h5>
+  <div class="card shadow-sm mb-4">
+    <div class="card-body small">
+      <table class="table table-sm table-borderless mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>Feature</th>
+            <th>OAuth2</th>
+            <th>+ OIDC</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Purpose</td>
+            <td>Authorisation</td>
+            <td class="text-success fw-semibold">+ Authentication</td>
+          </tr>
+          <tr>
+            <td>User identity</td>
+            <td><span class="text-muted">Not defined</span></td>
+            <td><code>id_token</code> JWT</td>
+          </tr>
+          <tr>
+            <td>Profile claims</td>
+            <td><span class="text-muted">Not defined</span></td>
+            <td>UserInfo endpoint</td>
+          </tr>
+          <tr>
+            <td>Server metadata</td>
+            <td><span class="text-muted">Not defined</span></td>
+            <td>Discovery document</td>
+          </tr>
+          <tr>
+            <td>New scope</td>
+            <td><span class="text-muted">—</span></td>
+            <td><code>openid</code></td>
+          </tr>
+          <tr>
+            <td>Spec</td>
+            <td>RFC 6749</td>
+            <td>OpenID Core 1.0</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h5 class="section-title">id_token vs access_token</h5>
+  <div class="card shadow-sm mb-4">
+    <div class="card-body small">
+      <table class="table table-sm table-borderless mb-0">
+        <thead class="table-light">
+          <tr>
+            <th style="width:38%">Property</th>
+            <th><code>id_token</code></th>
+            <th><code>access_token</code></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>For</td>
+            <td>The <em>client app</em></td>
+            <td>Resource servers</td>
+          </tr>
+          <tr>
+            <td>Purpose</td>
+            <td>Prove who the user is</td>
+            <td>Grant access to APIs</td>
+          </tr>
+          <tr>
+            <td>Contains</td>
+            <td>Identity claims</td>
+            <td>Authorisation claims</td>
+          </tr>
+          <tr>
+            <td>Send to API?</td>
+            <td class="text-danger fw-semibold">No</td>
+            <td class="text-success fw-semibold">Yes</td>
+          </tr>
+          <tr>
+            <td>Audience (<code>aud</code>)</td>
+            <td><code>client_id</code></td>
+            <td>Resource server(s)</td>
+          </tr>
+          <tr>
+            <td>Nonce</td>
+            <td>Present (replay guard)</td>
+            <td>Not required</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h5 class="section-title">OIDC Claims Glossary</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-body small">
+      <table class="table table-sm table-borderless mb-0">
+        <tbody>
+          <tr>
+            <td><code>sub</code></td>
+            <td>Subject — stable, unique user identifier (UUID)</td>
+          </tr>
+          <tr>
+            <td><code>iss</code></td>
+            <td>Issuer — the URL of the Keycloak realm that signed the token</td>
+          </tr>
+          <tr>
+            <td><code>aud</code></td>
+            <td>Audience — who the token is intended for</td>
+          </tr>
+          <tr>
+            <td><code>azp</code></td>
+            <td>Authorised party — the client that requested the token</td>
+          </tr>
+          <tr>
+            <td><code>iat</code></td>
+            <td>Issued at — Unix timestamp when the token was created</td>
+          </tr>
+          <tr>
+            <td><code>exp</code></td>
+            <td>Expiry — Unix timestamp after which the token is invalid</td>
+          </tr>
+          <tr>
+            <td><code>nonce</code></td>
+            <td>One-time value set by the client to prevent replay attacks</td>
+          </tr>
+          <tr>
+            <td><code>email</code></td>
+            <td>User's verified email address</td>
+          </tr>
+          <tr>
+            <td><code>preferred_username</code></td>
+            <td>Human-readable username (e.g. <em>alice</em>)</td>
+          </tr>
+          <tr>
+            <td><code>name</code></td>
+            <td>Display name (<code>given_name</code> + <code>family_name</code>)</td>
+          </tr>
+          <tr>
+            <td><code>auth_time</code></td>
+            <td>Time the user actually authenticated with Keycloak</td>
+          </tr>
+          <tr>
+            <td><code>session_state</code></td>
+            <td>Keycloak SSO session ID (absent in Client Credentials)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+{# ── RIGHT ── Live data tabs ───────────────────────────────────────────────── #}
+<div class="col-lg-7">
+
+  <h5 class="section-title">Live OIDC Data</h5>
+
+  <ul class="nav nav-tabs mb-0" id="oidcTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="idtoken-tab" data-bs-toggle="tab"
+              data-bs-target="#idtoken-pane" type="button" role="tab">
+        <i class="bi bi-file-earmark-code me-1"></i>ID Token
+        {% if has_id_token %}
+          <span class="badge bg-success ms-1" style="font-size:.6rem">present</span>
+        {% else %}
+          <span class="badge bg-secondary ms-1" style="font-size:.6rem">absent</span>
+        {% endif %}
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="userinfo-tab" data-bs-toggle="tab"
+              data-bs-target="#userinfo-pane" type="button" role="tab">
+        <i class="bi bi-person-circle me-1"></i>UserInfo
+        <span class="badge bg-{{ 'success' if userinfo_ok else 'danger' }} ms-1" style="font-size:.6rem">
+          {{ userinfo_status }}
+        </span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="discovery-tab" data-bs-toggle="tab"
+              data-bs-target="#discovery-pane" type="button" role="tab">
+        <i class="bi bi-card-list me-1"></i>Discovery
+      </button>
+    </li>
+  </ul>
+
+  <div class="tab-content border border-top-0 rounded-bottom shadow-sm bg-white">
+
+    {# ── ID Token tab ──────────────────────────────────────────────────────── #}
+    <div class="tab-pane fade show active p-3" id="idtoken-pane" role="tabpanel">
+      {% if has_id_token and id_token_info %}
+
+        <p class="small text-muted mb-3">
+          The <code>id_token</code> is a signed JWT returned alongside the <code>access_token</code>
+          when the <code>openid</code> scope is requested. It is <strong>for your application only</strong>
+          — never send it to a resource server.
+        </p>
+
+        {# Header #}
+        <div class="d-flex align-items-center mb-1">
+          <span class="badge bg-secondary me-2">Header</span>
+          <span class="small text-muted">Algorithm + key identifier</span>
+        </div>
+        <pre class="json-block mb-3" style="font-size:.72rem">{{ id_token_info.header | tojson(indent=2) }}</pre>
+
+        {# Payload with annotations #}
+        <div class="d-flex align-items-center mb-1">
+          <span class="badge bg-primary me-2">Payload</span>
+          <span class="small text-muted">Identity claims</span>
+        </div>
+        <div class="card bg-light border-0 mb-3 small">
+          <div class="card-body py-2 px-3">
+            <table class="table table-sm table-borderless mb-0">
+              {% set p = id_token_info.payload %}
+              <tr>
+                <td class="text-muted" style="width:160px"><code>sub</code></td>
+                <td><code>{{ p.get('sub', '—')[:24] }}…</code></td>
+                <td class="text-muted small">Stable user identifier</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><code>preferred_username</code></td>
+                <td><strong>{{ p.get('preferred_username', '—') }}</strong></td>
+                <td class="text-muted small">Human-readable username</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><code>email</code></td>
+                <td>{{ p.get('email', '—') }}</td>
+                <td class="text-muted small">Verified email address</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><code>aud</code></td>
+                <td><code>{{ p.get('aud', '—') }}</code></td>
+                <td class="text-muted small">This client — not a resource server</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><code>iss</code></td>
+                <td><code style="font-size:.72em">{{ p.get('iss', '—') }}</code></td>
+                <td class="text-muted small">Keycloak realm URL</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><code>exp</code></td>
+                <td>{{ p.get('exp_human', p.get('exp', '—')) }}</td>
+                <td class="text-muted small">Token expiry</td>
+              </tr>
+              {% if p.get('nonce') %}
+              <tr>
+                <td class="text-muted"><code>nonce</code></td>
+                <td><code>{{ p.get('nonce', '—')[:20] }}…</code></td>
+                <td class="text-muted small">Replay-attack prevention</td>
+              </tr>
+              {% endif %}
+              {% if p.get('auth_time') %}
+              <tr>
+                <td class="text-muted"><code>auth_time</code></td>
+                <td>{{ p.get('auth_time_human', p.get('auth_time', '—')) }}</td>
+                <td class="text-muted small">When user authenticated</td>
+              </tr>
+              {% endif %}
+            </table>
+          </div>
+        </div>
+
+        <details class="mb-3">
+          <summary class="small text-muted" style="cursor:pointer">Raw id_token payload (JSON)</summary>
+          <pre class="json-block mt-2" style="font-size:.68rem">{{ id_token_info.payload | tojson(indent=2) }}</pre>
+        </details>
+
+        <div class="alert alert-light border small mb-0">
+          <i class="bi bi-lightbulb-fill text-warning me-1"></i>
+          <strong>Key difference from access_token:</strong>
+          the <code>aud</code> here is <code>{{ id_token_info.payload.get('aud', '?') }}</code>
+          (your client app), whereas the access_token's <code>aud</code> targets resource servers.
+          Never pass the <code>id_token</code> to an API — it is not intended for them.
+        </div>
+
+      {% else %}
+        <div class="text-center py-4">
+          <i class="bi bi-file-earmark-x display-5 text-secondary mb-3 d-block"></i>
+          <p class="text-muted mb-1">No <code>id_token</code> in session.</p>
+          <p class="small text-muted mb-3">
+            <strong>{{ flow | replace('_', ' ') | title }}</strong> does not return an
+            <code>id_token</code>. Only flows with an interactive user session (Authorization Code,
+            Password Grant) produce one.
+          </p>
+          <div class="d-flex gap-2 justify-content-center">
+            <a href="/auth/authorization-code" class="btn btn-primary btn-sm">
+              <i class="bi bi-box-arrow-in-right me-1"></i>Login with Auth Code
+            </a>
+            <a href="/auth/password" class="btn btn-outline-secondary btn-sm">
+              <i class="bi bi-key me-1"></i>Password Grant
+            </a>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+
+    {# ── UserInfo tab ──────────────────────────────────────────────────────── #}
+    <div class="tab-pane fade p-3" id="userinfo-pane" role="tabpanel">
+      <p class="small text-muted mb-2">
+        The UserInfo endpoint is a protected resource server that returns claims about the
+        authenticated user. Unlike the <code>id_token</code> (which is embedded in the token
+        response), UserInfo is fetched via a live HTTP request using the <code>access_token</code>.
+      </p>
+
+      {# Request box #}
+      <div class="card bg-dark text-light mb-3" style="font-size:.75rem">
+        <div class="card-body py-2 px-3 font-monospace">
+          <div class="text-info">GET {{ userinfo_url }}</div>
+          <div class="text-secondary mt-1">Authorization: Bearer &lt;access_token&gt;</div>
+        </div>
+      </div>
+
+      {# Response #}
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-{{ 'success' if userinfo_ok else 'danger' }} me-2">{{ userinfo_status }}</span>
+        <span class="small text-muted">{{ 'Response' if userinfo_ok else 'Error' }}</span>
+      </div>
+      <pre class="json-block mb-3" style="font-size:.72rem">{{ userinfo | tojson(indent=2) }}</pre>
+
+      {% if userinfo_ok %}
+      <div class="alert alert-light border small mb-0">
+        <i class="bi bi-lightbulb-fill text-warning me-1"></i>
+        <strong>Why use UserInfo instead of the token?</strong>
+        Token claims are baked in at issuance and may be stale. UserInfo is a live call
+        that always reflects the current profile. Useful when user attributes change frequently
+        or when you need claims beyond what the token scope includes.
+      </div>
+      {% endif %}
+    </div>
+
+    {# ── Discovery tab ─────────────────────────────────────────────────────── #}
+    <div class="tab-pane fade p-3" id="discovery-pane" role="tabpanel">
+      <p class="small text-muted mb-2">
+        The OIDC Discovery document (<code>/.well-known/openid-configuration</code>) is a
+        JSON object that describes the Identity Provider's capabilities and all its endpoint
+        URLs. Clients use it to auto-configure — no hard-coded URLs needed.
+      </p>
+
+      <div class="card bg-dark text-light mb-3" style="font-size:.75rem">
+        <div class="card-body py-2 px-3 font-monospace">
+          <div class="text-info">GET {{ discovery_url }}</div>
+        </div>
+      </div>
+
+      {% if discovery_ok and discovery %}
+
+        {# Key fields structured view #}
+        <h6 class="small fw-semibold mb-2">Key Endpoints</h6>
+        <table class="table table-sm table-borderless small mb-3">
+          {% for key in ['issuer', 'authorization_endpoint', 'token_endpoint',
+                         'userinfo_endpoint', 'jwks_uri', 'end_session_endpoint'] %}
+            {% if discovery.get(key) %}
+            <tr>
+              <td class="text-muted" style="width:220px"><code>{{ key }}</code></td>
+              <td style="word-break:break-all"><code style="font-size:.7rem">{{ discovery[key] }}</code></td>
+            </tr>
+            {% endif %}
+          {% endfor %}
+        </table>
+
+        <h6 class="small fw-semibold mb-2">Supported Capabilities</h6>
+        <table class="table table-sm table-borderless small mb-3">
+          {% for key in ['grant_types_supported', 'response_types_supported',
+                         'subject_types_supported', 'id_token_signing_alg_values_supported',
+                         'scopes_supported', 'token_endpoint_auth_methods_supported',
+                         'claims_supported'] %}
+            {% if discovery.get(key) %}
+            <tr>
+              <td class="text-muted" style="width:220px"><code>{{ key }}</code></td>
+              <td>
+                {% for v in discovery[key] %}
+                  <span class="badge bg-light text-dark border me-1 mb-1" style="font-size:.62rem">{{ v }}</span>
+                {% endfor %}
+              </td>
+            </tr>
+            {% endif %}
+          {% endfor %}
+        </table>
+
+        <details>
+          <summary class="small text-muted" style="cursor:pointer">Full discovery document (JSON)</summary>
+          <pre class="json-block mt-2" style="font-size:.65rem">{{ discovery | tojson(indent=2) }}</pre>
+        </details>
+
+      {% else %}
+        <div class="alert alert-danger small mb-0">
+          <i class="bi bi-x-circle-fill me-1"></i>
+          Could not fetch discovery document.
+          <pre class="mt-2 mb-0 bg-dark text-light p-2 rounded" style="font-size:.72rem">{{ discovery | tojson(indent=2) }}</pre>
+        </div>
+      {% endif %}
+    </div>
+
+  </div>{# /tab-content #}
+
+  {# ── Access token comparison (collapsed) ────────────────────────────────── #}
+  {% if access_token_info and access_token_info.payload %}
+  <div class="mt-4">
+    <h5 class="section-title">Access Token (for comparison)</h5>
+    <div class="card shadow-sm">
+      <div class="card-header small d-flex align-items-center gap-2">
+        <span class="badge bg-warning text-dark">access_token</span>
+        <span class="text-muted">Authorisation token — sent to resource servers</span>
+      </div>
+      <div class="card-body small">
+        <table class="table table-sm table-borderless mb-2">
+          {% set ap = access_token_info.payload %}
+          <tr>
+            <td class="text-muted" style="width:160px"><code>sub</code></td>
+            <td><code>{{ ap.get('sub', '—')[:24] }}…</code></td>
+            <td class="text-muted small">Same as id_token</td>
+          </tr>
+          <tr>
+            <td class="text-muted"><code>azp</code></td>
+            <td><code>{{ ap.get('azp', '—') }}</code></td>
+            <td class="text-muted small">Authorised party (client)</td>
+          </tr>
+          <tr>
+            <td class="text-muted"><code>aud</code></td>
+            <td><code>{{ ap.get('aud', '—') }}</code></td>
+            <td class="text-muted small">Resource server(s) — not the client</td>
+          </tr>
+          <tr>
+            <td class="text-muted"><code>realm_access.roles</code></td>
+            <td>
+              {% for r in ap.get('realm_access', {}).get('roles', []) %}
+                <span class="badge bg-{{ 'danger' if 'admin' in r else 'primary' }} me-1">{{ r }}</span>
+              {% else %}
+                <span class="text-muted">none</span>
+              {% endfor %}
+            </td>
+            <td class="text-muted small">Authorisation claims — absent from id_token</td>
+          </tr>
+          <tr>
+            <td class="text-muted"><code>exp</code></td>
+            <td>{{ ap.get('exp_human', ap.get('exp', '—')) }}</td>
+            <td class="text-muted small">Short-lived; use refresh token to renew</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+</div>
+
+{# ── Key takeaways ─────────────────────────────────────────────────────────── #}
+<div class="card bg-light border-0 shadow-sm mt-4">
+  <div class="card-body small">
+    <strong><i class="bi bi-lightbulb-fill text-warning me-1"></i>Key takeaways</strong>
+    <ul class="mb-0 mt-2">
+      <li>Add the <code>openid</code> scope to any OAuth2 request to opt into OIDC — you'll get an <code>id_token</code> back.</li>
+      <li>The <code>id_token</code> is for your client application only — never forward it to an API.</li>
+      <li>The UserInfo endpoint always returns live claims; the <code>id_token</code> is a snapshot at login time.</li>
+      <li>The Discovery document lets clients auto-configure without hard-coded URLs — the basis of portable OIDC libraries.</li>
+      <li>Client Credentials does not produce an <code>id_token</code> — there is no user, so there is no identity to assert.</li>
+    </ul>
+  </div>
+</div>
+
+{% endblock %}

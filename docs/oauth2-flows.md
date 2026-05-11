@@ -91,7 +91,7 @@ grant_type=authorization_code
   "id_token":      "<JWT>",
   "refresh_token": "<opaque or JWT>",
   "token_type":    "Bearer",
-  "expires_in":    300,
+  "expires_in":    1800,
   "scope":         "openid profile email roles"
 }
 ```
@@ -208,10 +208,81 @@ grant_type=client_credentials
 
 ---
 
+## Grant Type 4 — On-Behalf-Of / Token Exchange (RFC 8693)
+
+**When to use:** A middle-tier service needs to call a downstream API *on behalf of* a user,
+preserving the user's identity in the delegated token while the acting client changes.
+
+### Prerequisites
+
+- `KC_FEATURES=preview` enabled on the Keycloak service (already in `docker-compose.yml`)
+- Fine-grained permissions enabled on `demo-client` (done by `keycloak-init` at startup)
+- `middle-tier-client` in the `aud` claim of the subject token (configured via audience mapper)
+
+### Flow
+
+```
+User (Alice)           Client App          middle-tier-client        Keycloak
+     │                     │                       │                     │
+     │  Login (Auth Code)  │                       │                     │
+     │────────────────────▶│                       │                     │
+     │◀─── access_token ───│                       │                     │
+     │   (sub=alice,       │                       │                     │
+     │    aud=[demo-client, │                       │                     │
+     │    middle-tier-client])                      │                     │
+     │                     │                       │                     │
+     │  Request OBO        │                       │                     │
+     │────────────────────▶│                       │                     │
+     │                     │  POST /token          │                     │
+     │                     │  grant_type=token-exchange                  │
+     │                     │  subject_token=<alice's token>              │
+     │                     │  actor=middle-tier-client                   │
+     │                     │  client_secret=***    │                     │
+     │                     │──────────────────────────────────────────▶  │
+     │                     │◀────────── delegated access_token ──────────│
+     │                     │  (sub=alice, azp=middle-tier-client)        │
+     │◀────────────────────│                       │                     │
+```
+
+### Request
+
+```
+POST http://keycloak:8080/realms/demo/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&client_id=middle-tier-client
+&client_secret=middle-tier-client-secret
+&subject_token=<alice's access token>
+&subject_token_type=urn:ietf:params:oauth:token-type:access_token
+&requested_token_type=urn:ietf:params:oauth:token-type:access_token
+```
+
+### Delegated token claims
+
+| Claim | Subject token | Delegated token |
+|---|---|---|
+| `sub` | Alice's UUID | Alice's UUID (preserved) |
+| `azp` | `demo-client` | `middle-tier-client` |
+| `aud` | `[account]` | `[account]` |
+| `act` | Not present | `{"sub": "middle-tier-client"}` |
+
+The `sub` (Alice's identity) is preserved, but `azp` and `act` show that `middle-tier-client`
+performed the exchange. This creates an auditable delegation chain.
+
+### Why the audience mapper matters
+
+Keycloak refuses to exchange a token on behalf of a client that is not listed in the token's
+`aud` claim. The audience mapper on `demo-client` injects `middle-tier-client` into Alice's
+`aud` so the exchange can proceed. This prevents arbitrary middle-tier services from
+impersonating users to downstream APIs they were never intended to reach.
+
+---
+
 ## Token Refresh
 
-Access tokens are short-lived (300 s in this demo). When they expire, the client can
-obtain a new access token using the refresh token — without asking the user to log in again.
+Access tokens are short-lived. When they expire, the client can obtain a new access token
+using the refresh token — without asking the user to log in again.
 
 ```
 POST http://keycloak:8080/realms/demo/protocol/openid-connect/token

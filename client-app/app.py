@@ -1,12 +1,15 @@
 """
 Client Application — Flask OAuth2 demo.
 
-Demonstrates three OAuth2 grant types and two advanced token exchange patterns:
+Demonstrates three OAuth2 grant types, three advanced token exchange patterns,
+and SPIFFE workload identity:
   1. Authorization Code Flow  — the standard, browser-redirect-based flow
   2. Resource Owner Password Credentials (ROPC) — direct username/password exchange
   3. Client Credentials — machine-to-machine, no user involved
   4. On-Behalf-Of (OBO) — RFC 8693 token exchange, middle tier acts on behalf of user
   5. Token Rescoping — RFC 8693 downscoping, strip roles from a token
+  6. SPIFFE/SPIRE — workload identity: JWT-SVID → OAuth2 bridge → resource server
+  7. OIDC Identity Layer — id_token, UserInfo endpoint, Discovery document
 
 After obtaining a token, the app uses it to call the protected Resource Server
 and shows the raw + decoded JWT to help understand what is inside the token.
@@ -19,6 +22,8 @@ URL layout:
   /auth/client-credentials        Client Credentials grant (one-click)
   /auth/token-exchange/obo        On-Behalf-Of token exchange demo (RFC 8693)
   /auth/token-exchange/rescope    Token downscoping / rescoping demo (RFC 8693)
+  /auth/spiffe                    SPIFFE workload identity → OAuth2 demo
+  /auth/oidc                      OIDC identity layer demo (id_token, UserInfo, Discovery)
   /auth/refresh                   Refresh the current access token
   /auth/logout                    Clear session + SSO logout from Keycloak
   /token/inspect                  Detailed JWT inspection page
@@ -54,6 +59,7 @@ MIDDLE_CLIENT_ID     = os.getenv("MIDDLE_TIER_CLIENT_ID",     "middle-tier-clien
 MIDDLE_CLIENT_SECRET = os.getenv("MIDDLE_TIER_CLIENT_SECRET", "middle-tier-client-secret")
 
 RESOURCE_URL  = os.getenv("RESOURCE_SERVER_URL", "http://resource-server:8001")
+SPIFFE_URL    = os.getenv("SPIFFE_SERVICE_URL",  "http://spiffe-service:8002")
 REDIRECT_URI  = os.getenv("REDIRECT_URI", "http://localhost:5000/auth/callback")
 
 # Keycloak endpoints
@@ -406,6 +412,105 @@ def token_exchange_rescope():
         original_token_info=original_info,
         exchange_result=exchange_result,
         rescoped_token_info=rescoped_token_info,
+    )
+
+
+# ── 6. SPIFFE workload identity demo ──────────────────────────────────────────
+
+@app.route("/auth/spiffe")
+def spiffe_demo():
+    """
+    Proxy the full SPIFFE → OAuth2 → Resource Server demo from the spiffe-service.
+
+    The spiffe-service container holds the SPIRE agent socket and performs:
+      1. Fetch JWT-SVID from SPIRE workload API (proves container identity)
+      2. Validate SPIFFE identity locally
+      3. Map SPIFFE ID → Keycloak service account (bridge pattern)
+      4. Call the protected resource server with the resulting OAuth2 token
+
+    We just proxy the /demo endpoint result here and render it nicely.
+    """
+    try:
+        resp = requests.get(f"{SPIFFE_URL}/demo", timeout=15)
+        demo_data = resp.json() if resp.content else {}
+        error = None if resp.ok else f"spiffe-service returned HTTP {resp.status_code}"
+    except requests.ConnectionError:
+        demo_data = {}
+        error = "Cannot connect to spiffe-service — is the container running?"
+    except Exception as exc:
+        demo_data = {}
+        error = str(exc)
+
+    return render_template("spiffe_demo.html", demo=demo_data, error=error)
+
+
+# ── 7. OIDC Identity Layer ────────────────────────────────────────────────────
+
+@app.route("/auth/oidc")
+def oidc_demo():
+    """
+    OpenID Connect identity layer demo.
+
+    Shows the three OIDC-specific artefacts that sit on top of OAuth2:
+      - id_token: JWT for the client, proves who the user is
+      - UserInfo endpoint: live call returning user profile claims
+      - Discovery document: /.well-known/openid-configuration
+
+    Client Credentials tokens have no id_token — that case is handled gracefully.
+    """
+    td = session.get("token_data")
+    if not td:
+        flash("Please log in first to explore the OIDC identity layer.", "warning")
+        return redirect(url_for("index"))
+    if token_expired(td):
+        flash("Your token has expired. Please log in again.", "warning")
+        return redirect(url_for("index"))
+
+    flow = td.get("flow", "unknown")
+    id_token_raw  = td.get("id_token")
+    id_token_info = decode_jwt(id_token_raw) if id_token_raw else None
+
+    access_token      = td.get("access_token", "")
+    access_token_info = decode_jwt(access_token)
+
+    # Call UserInfo endpoint (server-to-server)
+    userinfo_internal = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/userinfo"
+    userinfo_display  = f"{KC_EXT}/realms/{REALM}/protocol/openid-connect/userinfo"
+    try:
+        ui_resp      = requests.get(userinfo_internal, headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+        userinfo     = ui_resp.json() if ui_resp.content else {}
+        userinfo_status = ui_resp.status_code
+        userinfo_ok  = ui_resp.ok
+    except Exception as exc:
+        userinfo        = {"error": str(exc)}
+        userinfo_status = 503
+        userinfo_ok     = False
+
+    # Fetch OIDC discovery document
+    discovery_internal = f"{KC_INT}/realms/{REALM}/.well-known/openid-configuration"
+    discovery_display  = f"{KC_EXT}/realms/{REALM}/.well-known/openid-configuration"
+    try:
+        disc_resp    = requests.get(discovery_internal, timeout=10)
+        discovery    = disc_resp.json() if disc_resp.content else {}
+        discovery_ok = disc_resp.ok
+    except Exception as exc:
+        discovery    = {"error": str(exc)}
+        discovery_ok = False
+
+    return render_template(
+        "oidc_demo.html",
+        flow=flow,
+        id_token_raw=id_token_raw,
+        id_token_info=id_token_info,
+        access_token_info=access_token_info,
+        userinfo=userinfo,
+        userinfo_status=userinfo_status,
+        userinfo_ok=userinfo_ok,
+        userinfo_url=userinfo_display,
+        discovery=discovery,
+        discovery_ok=discovery_ok,
+        discovery_url=discovery_display,
+        has_id_token=id_token_raw is not None,
     )
 
 
