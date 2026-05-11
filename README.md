@@ -1,8 +1,8 @@
 # OAuth2 + JWT with Keycloak — Learning Demo
 
-A fully containerised environment to understand how **OAuth2**, **JWT**, **SPIFFE/SPIRE**, and
-**Keycloak** work together. Five flows are demonstrated end-to-end, from browser login through
-workload identity to protected API access.
+A fully containerised environment to understand how **OAuth2**, **OIDC**, **JWT**, **SPIFFE/SPIRE**,
+and **Keycloak** work together. Eleven flows are demonstrated end-to-end, from browser login and
+device authorization through workload identity to proof-of-possession and token introspection.
 
 ---
 
@@ -12,35 +12,33 @@ workload identity to protected API access.
 Browser / curl
      │
      ▼
-┌─────────────────────┐        ┌──────────────────────────────┐
-│   Client App        │──JWT──▶│   Resource Server            │
-│   Flask :5000       │        │   FastAPI :8001              │
-│                     │        │                              │
-│ • Auth Code flow    │        │ GET /api/public   (open)     │
-│ • Password grant    │        │ GET /api/products (any token)│
-│ • Client creds      │        │ GET /api/users/me (user-role)│
-│ • On-Behalf-Of      │        │ GET /api/users    (admin)    │
-│ • SPIFFE demo       │        │ GET /api/admin/*  (admin)    │
-└──────┬──────────────┘        └──────────────┬───────────────┘
-       │ token exchange                        │ JWKS fetch
-       │ (server-to-server)                    ▼
-       ▼                       ┌─────────────────────────────────────────┐
-┌─────────────────────────────────────────────────────────────────────┐  │
-│   Keycloak :8080   (realm: demo)                                    │  │
-│                                                                     │  │
-│ • Issues JWT access tokens (RS256)                                  │  │
-│ • Manages users, roles, clients                                     │  │
-│ • RFC 8693 token exchange (preview feature)                         │  │
-└──────────────────────────┬──────────────────────────────────────────┘  │
-                           │ Postgres                                     │
-                    ┌──────▼──────┐                                       │
-                    │  PostgreSQL  │                                       │
-                    │  :5432       │                                       │
-                    └─────────────┘                                       │
+┌──────────────────────────────────────┐        ┌──────────────────────────────┐
+│   Client App  (Flask :5000)          │──JWT──▶│   Resource Server            │
+│                                      │        │   FastAPI :8001              │
+│ 1.  Authorization Code               │        │                              │
+│ 2.  Password Grant (ROPC)            │        │ GET /api/public   (open)     │
+│ 3.  Client Credentials               │        │ GET /api/products (any token)│
+│ 4.  On-Behalf-Of (RFC 8693)          │        │ GET /api/users/me (user-role)│
+│ 5.  Token Rescoping (RFC 8693)       │        │ GET /api/users    (admin)    │
+│ 6.  SPIFFE / Workload Identity       │        │ GET /api/admin/*  (admin)    │
+│ 7.  OIDC Identity Layer              │        │ GET /api/dpop-protected      │
+│ 8.  DPoP (RFC 9449)                  │        └──────────────┬───────────────┘
+│ 9.  Device Authorization (RFC 8628)  │                       │ JWKS fetch
+│ 10. PKCE (RFC 7636)                  │                       ▼
+│ 11. Token Introspection (RFC 7662)   │        ┌─────────────────────────────────────────┐
+└──────┬───────────────────────────────┘        │   Keycloak :8080   (realm: demo)         │
+       │ token exchange / API calls             │                                          │
+       ▼                                        │ • Issues JWT access tokens (RS256)       │
+┌──────────────────────────────────────┐        │ • Manages users, roles, clients          │
+│   Keycloak :8080   (realm: demo)     │        │ • RFC 8693 token exchange (preview)      │
+│   PostgreSQL :5432 (persistence)     │        │ • DPoP enforcement (RFC 9449)            │
+└──────────────────────────────────────┘        │ • Device Authorization Grant (RFC 8628)  │
+                                                │ • PKCE enforcement (RFC 7636)            │
+                                                └──────────────────────────────────────────┘
 
 SPIFFE / SPIRE stack (workload identity):
-                                                                          │
-┌──────────────┐  gRPC :8081  ┌─────────────────┐   Workload API  ┌──────▼─────────┐
+
+┌──────────────┐  gRPC :8081  ┌─────────────────┐   Workload API  ┌────────────────┐
 │ spire-server │◄─────────────│  spire-agent     │────unix socket──│ spiffe-service │
 │  CA/registry │              │  (attestation)   │                 │  FastAPI :8002 │
 └──────────────┘              └─────────────────┘                 └────────────────┘
@@ -68,7 +66,7 @@ docker compose up --build
 
 First boot takes **3–5 minutes**: PostgreSQL initialises, Keycloak imports the realm and
 generates RSA key pairs, SPIRE bootstraps its CA, and `keycloak-init` configures token
-exchange permissions via the Admin API.
+exchange permissions and provisions all clients via the Admin API.
 
 Watch for all services to show `healthy` or `Exited (0)`:
 
@@ -93,7 +91,11 @@ docker compose ps
 4. Click any API button to see role-based access in action
 5. Try **"On-Behalf-Of"** under Advanced Token Exchange
 6. Click **"Run SPIFFE Demo"** to see workload identity without secrets
-7. Log out, log in as `bob` / `bob123` (user-role only), try the admin endpoint → 403
+7. Try **"DPoP"** to see sender-constrained tokens with a proof-of-possession key
+8. Try **"Device Authorization Grant"** to simulate a TV/CLI device flow
+9. Try **"PKCE"** to see the public-client code exchange
+10. Try **"Token Introspection"** to watch a token go from `active: true` to `active: false`
+11. Log out, log in as `bob` / `bob123` (user-role only), try the admin endpoint → 403
 
 ---
 
@@ -112,6 +114,9 @@ docker compose ps
 | `service-client` | `service-client-secret` | `user-role` | Client Credentials flow |
 | `middle-tier-client` | `middle-tier-client-secret` | — | On-Behalf-Of exchange |
 | `spiffe-service` | `spiffe-service-secret` | `user-role` | SPIFFE→OAuth2 bridge |
+| `dpop-client` | `dpop-client-secret` | — | DPoP bound tokens (Password Grant) |
+| `device-client` | `device-client-secret` | — | Device Authorization Grant |
+| `pkce-client` | _(none — public client)_ | — | PKCE Authorization Code |
 
 ---
 
@@ -133,7 +138,7 @@ username + password → POST /token → access_token
 ```
 
 Credentials are sent directly to the token endpoint. Avoid in production; useful for
-testing and scripting.
+testing and scripting. Requires `directAccessGrantsEnabled: true` on the client.
 
 ### 3. Client Credentials (machine-to-machine)
 
@@ -142,6 +147,7 @@ client_id + client_secret → POST /token → access_token (no user)
 ```
 
 The application authenticates as itself. Produces a service account token, not a user token.
+No `id_token` or `refresh_token` in the response.
 
 ### 4. On-Behalf-Of / Token Exchange (RFC 8693)
 
@@ -153,7 +159,16 @@ User token + middle-tier-client credentials → POST /token → delegated token
 the user's identity (`sub`) while switching the acting client (`azp`). Requires the
 `KC_FEATURES=preview` flag and fine-grained authorization policies on `demo-client`.
 
-### 5. SPIFFE Workload Identity
+### 5. Token Rescoping (RFC 8693)
+
+```
+User token + middle-tier-client → POST /token (downscoped) → restricted token
+```
+
+A variant of token exchange that uses `scope` to request a token with fewer permissions than
+the original, allowing middle-tier services to enforce least privilege on delegated tokens.
+
+### 6. SPIFFE Workload Identity
 
 ```
 SPIRE attests container → JWT-SVID → OAuth2 bridge → access_token
@@ -163,6 +178,56 @@ SPIRE attests container → JWT-SVID → OAuth2 bridge → access_token
 receives a short-lived JWT-SVID (~5 min), maps it to a Keycloak service account, and uses
 the resulting OAuth2 token to call the resource server — no static secret ever stored.
 See [docs/spiffe-oauth2.md](docs/spiffe-oauth2.md) for details.
+
+### 7. OIDC Identity Layer
+
+```
+id_token + UserInfo endpoint + Discovery document
+```
+
+Shows the three OIDC-specific artefacts that sit on top of OAuth2: the `id_token` JWT (for
+the client, proves who the user is), the `/userinfo` endpoint (live profile claims), and the
+`/.well-known/openid-configuration` Discovery document (endpoint autodiscovery).
+
+### 8. DPoP — Proof of Possession (RFC 9449)
+
+```
+Ephemeral EC key → DPoP proof header → token with cnf.jkt → proof-bound API call
+```
+
+Generates an ephemeral P-256 key pair, binds it to the access token (`cnf.jkt` = JWK
+Thumbprint), then calls the resource server with a second per-request DPoP proof. Even if
+the token is stolen, it cannot be replayed without the private key. Requires Keycloak 26.0+.
+
+### 9. Device Authorization Grant (RFC 8628)
+
+```
+Device → /auth/device → user_code → user approves in browser → device polls → token
+```
+
+Browserless device flow for smart TVs, CLIs, or IoT devices. The device requests a code,
+displays a `user_code` for the user to enter on a separate device, then polls until the user
+approves. The demo shows real-time polling feedback.
+
+### 10. PKCE — Proof Key for Code Exchange (RFC 7636)
+
+```
+code_verifier → SHA-256 → code_challenge → auth request → verifier proves ownership
+```
+
+Hardens the Authorization Code flow for public clients (SPAs, mobile apps) that cannot
+safely hold a client secret. `pkce-client` is a public client (no secret); the
+`code_verifier` takes the place of the client secret during the token exchange.
+
+### 11. Token Introspection (RFC 7662)
+
+```
+POST /introspect → {active: true} → revoke refresh_token → POST /introspect → {active: false}
+```
+
+Demonstrates the difference between local JWT decode (signature-only) and remote introspection
+(real-time revocation status from the authorization server). After the refresh token is revoked,
+the access token still decodes locally but introspection returns `active: false`.
 
 ---
 
@@ -190,18 +255,29 @@ If any check fails → **401 Unauthorized** or **403 Forbidden**.
 ## Keycloak Realm Configuration
 
 The realm is auto-imported from [`keycloak/realm-export.json`](keycloak/realm-export.json)
-on first boot. Post-import configuration (token-exchange permissions, `spiffe-service` client
-provisioning) is handled by the `keycloak-init` container on every startup.
+on first boot. Post-import configuration (token-exchange permissions, client provisioning) is
+handled by the `keycloak-init` container on every startup.
+
+Keycloak version: **26.0** (`quay.io/keycloak/keycloak:26.0`)
 
 | Setting | Value |
 |---|---|
 | Realm | `demo` |
 | Token lifetime | 30 minutes |
 | Signature algorithm | RS256 |
-| Client `demo-client` | Auth Code + Password flows, confidential |
-| Client `service-client` | Client Credentials only, confidential |
-| Client `middle-tier-client` | Client Credentials only — OBO actor |
-| Client `spiffe-service` | Client Credentials only — SPIFFE bridge |
+| Preview features | Enabled (`KC_FEATURES=preview`) — required for RFC 8693 token exchange |
+
+### Clients
+
+| Client | Flow | Notes |
+|---|---|---|
+| `demo-client` | Auth Code + Password | Browser login and ROPC testing; confidential |
+| `service-client` | Client Credentials | Machine-to-machine demo; confidential |
+| `middle-tier-client` | Client Credentials | OBO / rescoping actor; confidential |
+| `spiffe-service` | Client Credentials | SPIFFE→OAuth2 bridge service account; confidential |
+| `dpop-client` | Password Grant (DPoP) | `dpop.bound.access.tokens: true`; confidential |
+| `device-client` | Device Authorization Grant | `oauth2.device.authorization.grant.enabled: true`; confidential |
+| `pkce-client` | Authorization Code + PKCE | `pkce.code.challenge.method: S256`; **public** (no secret) |
 
 ### Roles
 
@@ -231,6 +307,21 @@ TOKEN=$(curl -s -X POST http://localhost:8080/realms/demo/protocol/openid-connec
 
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8001/api/products
 
+# Device Authorization Grant — step 1: request device code
+curl -s -X POST http://localhost:8080/realms/demo/protocol/openid-connect/auth/device \
+  -d "client_id=device-client&client_secret=device-client-secret" | jq .
+
+# Device Authorization Grant — step 2: poll for token (replace DEVICE_CODE)
+curl -s -X POST http://localhost:8080/realms/demo/protocol/openid-connect/token \
+  -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
+  -d "client_id=device-client&client_secret=device-client-secret" \
+  -d "device_code=DEVICE_CODE" | jq .
+
+# Token Introspection
+curl -s -X POST http://localhost:8080/realms/demo/protocol/openid-connect/token/introspect \
+  -d "client_id=demo-client&client_secret=demo-client-secret" \
+  -d "token=$TOKEN" | jq .active
+
 # Decode token locally (without verification)
 echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 
@@ -252,7 +343,7 @@ docker compose down -v
 
 After `docker compose down -v`, a clean `docker compose up --build` will:
 1. Re-import the realm from `realm-export.json`
-2. Run `keycloak-init` to configure token exchange and provision the `spiffe-service` client
+2. Run `keycloak-init` to configure token exchange, provision all clients, and assign roles
 3. Bootstrap SPIRE (new CA keys, new join token)
 
 ---
@@ -287,6 +378,25 @@ docker compose logs keycloak-init
 
 To re-run it: `docker compose up keycloak-init`.
 
+### DPoP demo shows "DPoP proof is missing" or no `cnf.jkt`
+
+This requires **Keycloak 26.0+**. Check the image in `docker-compose.yml`:
+
+```bash
+docker compose images keycloak
+```
+
+Keycloak 24.x silently ignores the DPoP header on Password Grant — upgrade to 26.0.
+
+### Device Authorization Grant — poll returns "expired"
+
+Device codes expire after a few minutes. Reload `/auth/device` to get a fresh code.
+
+### PKCE demo shows "invalid_grant"
+
+The PKCE flow is session-bound. If you open `/auth/pkce/result` directly without going
+through `/auth/pkce` first, the `code_verifier` is missing. Start from the home page card.
+
 ### SPIFFE demo shows error
 
 Check all SPIRE containers are healthy and `spiffe-service` is running:
@@ -299,12 +409,6 @@ docker compose logs spiffe-service --tail 30
 If `spire-agent` is unhealthy, check `docker compose logs spire-agent`. The agent needs
 `spire-init` to complete first (writes the join token).
 
-If `spiffe-service` is stuck in `Created`, run:
-
-```bash
-docker compose up -d keycloak-init spiffe-service
-```
-
 ### Port conflict
 
 Edit the `ports` section in `docker-compose.yml`. If you change the Keycloak port, also
@@ -316,20 +420,20 @@ update `KEYCLOAK_EXTERNAL_URL` and `KEYCLOAK_ISSUER` in the relevant services.
 
 ```
 oauth2sample/
-├── docker-compose.yml              # Full 9-service stack
+├── docker-compose.yml              # Full 10-service stack
 ├── keycloak/
 │   └── realm-export.json           # Auto-imported realm (users, clients, roles)
 ├── keycloak-init/
 │   ├── Dockerfile
-│   └── setup.py                    # Configures token-exchange + spiffe-service client
+│   └── setup.py                    # Provisions token-exchange + all demo clients
 ├── resource-server/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── main.py                     # FastAPI + JWT validation
+│   └── main.py                     # FastAPI + JWT validation + DPoP endpoint
 ├── client-app/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── app.py                      # Flask + all OAuth2 flows
+│   ├── app.py                      # Flask — all 11 OAuth2/OIDC flows
 │   └── templates/
 │       ├── base.html
 │       ├── index.html
@@ -338,7 +442,12 @@ oauth2sample/
 │       ├── token_inspect.html
 │       ├── token_exchange_obo.html
 │       ├── token_exchange_rescope.html
-│       └── spiffe_demo.html
+│       ├── spiffe_demo.html
+│       ├── dpop_demo.html
+│       ├── oidc_demo.html
+│       ├── device_demo.html
+│       ├── pkce_demo.html
+│       └── introspect_demo.html
 ├── spiffe-service/
 │   ├── Dockerfile
 │   ├── requirements.txt
@@ -367,6 +476,10 @@ oauth2sample/
 
 - [OAuth 2.0 RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749)
 - [RFC 8693 — Token Exchange](https://datatracker.ietf.org/doc/html/rfc8693)
+- [RFC 9449 — DPoP](https://datatracker.ietf.org/doc/html/rfc9449)
+- [RFC 8628 — Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628)
+- [RFC 7636 — PKCE](https://datatracker.ietf.org/doc/html/rfc7636)
+- [RFC 7662 — Token Introspection](https://datatracker.ietf.org/doc/html/rfc7662)
 - [OpenID Connect Core](https://openid.net/specs/openid-connect-core-1_0.html)
 - [JSON Web Token RFC 7519](https://datatracker.ietf.org/doc/html/rfc7519)
 - [SPIFFE Specification](https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE.md)

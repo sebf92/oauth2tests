@@ -1,0 +1,354 @@
+{% extends "base.html" %}
+{% block title %}Device Authorization Grant (RFC 8628){% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted small">
+    <i class="bi bi-arrow-left me-1"></i>Back to home
+  </a>
+</div>
+
+{# ── Title ───────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5" style="border-color:#fd7e14!important">
+  <h1 class="h4 fw-bold mb-1">
+    <i class="bi bi-tv text-warning me-2"></i>Device Authorization Grant (RFC 8628)
+  </h1>
+  <p class="text-muted mb-0">
+    Enables devices with <strong>no browser or limited input</strong> — smart TVs, CLI tools, IoT
+    sensors — to acquire OAuth2 tokens by delegating the authorization step to a secondary device
+    (phone, laptop) that <em>does</em> have a browser.
+  </p>
+</div>
+
+<div class="row g-4">
+
+{# ── LEFT — Concepts ──────────────────────────────────────────────────────── #}
+<div class="col-lg-5">
+
+  <h5 class="section-title">How It Works</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-body small">
+      <ol class="mb-3 ps-3">
+        <li class="mb-2">
+          Device calls <code>/auth/device</code> → Authorization Server returns
+          <code>device_code</code>, <code>user_code</code>, and <code>verification_uri</code>.
+        </li>
+        <li class="mb-2">
+          Device displays the <code>user_code</code> and <code>verification_uri</code>
+          to the user (on screen, in terminal output, etc.).
+        </li>
+        <li class="mb-2">
+          User opens the <code>verification_uri</code> on <strong>any capable device</strong>
+          (phone, laptop) and enters the <code>user_code</code>.
+        </li>
+        <li class="mb-2">
+          Device polls <code>/token</code> every <code>interval</code> seconds using
+          <code>grant_type=urn:ietf:params:oauth:grant-type:device_code</code>.
+        </li>
+        <li>
+          AS returns <code>authorization_pending</code> while waiting; once the user approves,
+          it issues a full token response (access + refresh + id tokens).
+        </li>
+      </ol>
+      <div class="bg-light rounded p-2 font-monospace" style="font-size:.72rem">
+        <div class="text-secondary">POST /device/auth  →  device_code + user_code</div>
+        <div class="text-info mt-1">→ user enters code at verification_uri</div>
+        <div class="text-secondary mt-1">POST /token (poll every N s)</div>
+        <div class="text-secondary">  ← authorization_pending  (keep polling)</div>
+        <div class="text-success">  ← access_token + refresh_token  (approved!)</div>
+      </div>
+    </div>
+  </div>
+
+  <h5 class="section-title">Use Cases</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-body small">
+      <p class="mb-2">Common scenarios where Device Flow shines:</p>
+      <ul class="mb-3 ps-3">
+        <li class="mb-1"><strong>CLI tools</strong> — <code>gh auth login</code>, <code>gcloud auth login</code></li>
+        <li class="mb-1"><strong>Smart TVs</strong> — streaming apps (Netflix, YouTube) on TV remotes</li>
+        <li class="mb-1"><strong>IoT devices</strong> — sensors, embedded hardware, kiosks</li>
+        <li class="mb-1"><strong>Printers / scanners</strong> — cloud-print services without full browsers</li>
+      </ul>
+      <table class="table table-sm table-borderless mb-0">
+        <thead class="table-light">
+          <tr><th>Property</th><th>Auth Code</th><th>Device Flow</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Requires browser on device</td>
+            <td class="text-danger">Yes</td>
+            <td class="text-success">No</td>
+          </tr>
+          <tr>
+            <td>User enters code</td>
+            <td class="text-muted">No</td>
+            <td class="text-success">Yes</td>
+          </tr>
+          <tr>
+            <td>Client type</td>
+            <td>Confidential/Public</td>
+            <td>Confidential</td>
+          </tr>
+          <tr>
+            <td>Polling</td>
+            <td class="text-muted">No</td>
+            <td class="text-warning">Yes</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h5 class="section-title">Error Codes</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-body small">
+      <table class="table table-sm table-borderless mb-0">
+        <tbody>
+          <tr>
+            <td><code class="text-warning">authorization_pending</code></td>
+            <td class="text-muted">User has not yet acted — keep polling at current interval.</td>
+          </tr>
+          <tr>
+            <td><code class="text-warning">slow_down</code></td>
+            <td class="text-muted">Polling too fast — add 5 s to interval and continue.</td>
+          </tr>
+          <tr>
+            <td><code class="text-danger">access_denied</code></td>
+            <td class="text-muted">User actively rejected the request — stop polling.</td>
+          </tr>
+          <tr>
+            <td><code class="text-danger">expired_token</code></td>
+            <td class="text-muted"><code>device_code</code> lifetime elapsed — restart the flow.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+{# ── RIGHT — Live demo (sequential steps, no tabs) ────────────────────────── #}
+<div class="col-lg-7">
+
+  <h5 class="section-title">Live Demo</h5>
+
+  {# ── Step 1: Device Code Request ─────────────────────────────────────────── #}
+  <div class="card shadow-sm mb-4">
+    <div class="card-header small fw-semibold bg-white d-flex align-items-center gap-2">
+      <span class="badge rounded-pill bg-warning text-dark">Step 1</span>
+      Device Code Request
+    </div>
+    <div class="card-body">
+
+      {% if error_info %}
+        <div class="alert alert-danger small mb-3 py-2">
+          <i class="bi bi-x-circle-fill me-1"></i>
+          <strong>Device code request failed.</strong>
+          <pre class="bg-light rounded p-2 small mb-0 mt-2" style="max-height:160px;overflow-y:auto;word-break:break-all;white-space:pre-wrap"><code>{{ error_info | tojson(indent=2) }}</code></pre>
+        </div>
+
+      {% elif device_data %}
+        {# Big user_code display #}
+        <div class="alert alert-info text-center mb-3 py-3">
+          <div class="small text-muted mb-1">Enter this code at the verification URL:</div>
+          <div class="display-6 fw-bold font-monospace letter-spacing-1">{{ device_data.user_code }}</div>
+        </div>
+
+        <p class="small mb-2">
+          <i class="bi bi-link-45deg me-1"></i>
+          <strong>Verification URL:</strong>
+          <a href="{{ device_data.verification_uri }}" target="_blank" class="ms-1">
+            {{ device_data.verification_uri }}
+            <i class="bi bi-box-arrow-up-right ms-1" style="font-size:.7rem"></i>
+          </a>
+        </p>
+        {% if device_data.verification_uri_complete %}
+        <p class="small mb-2">
+          <i class="bi bi-qr-code me-1"></i>
+          <strong>Pre-filled URL:</strong>
+          <a href="{{ device_data.verification_uri_complete }}" target="_blank" class="ms-1 font-monospace" style="font-size:.78rem;word-break:break-all">
+            {{ device_data.verification_uri_complete }}
+          </a>
+        </p>
+        {% endif %}
+
+        <div class="row g-2 small mt-2 mb-3">
+          <div class="col-6">
+            <div class="bg-light rounded p-2 text-center">
+              <div class="text-muted" style="font-size:.7rem">Expires in</div>
+              <div class="fw-semibold">{{ device_data.expires_in }}s</div>
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="bg-light rounded p-2 text-center">
+              <div class="text-muted" style="font-size:.7rem">Poll interval</div>
+              <div class="fw-semibold">{{ device_data.interval }}s</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="alert alert-light border small py-2 mb-0">
+          <i class="bi bi-info-circle-fill text-info me-1"></i>
+          Open the link above in your browser and enter <strong>{{ device_data.user_code }}</strong> to authorize.
+        </div>
+
+        <details class="mt-3">
+          <summary class="small text-muted" style="cursor:pointer">Raw device code response (JSON)</summary>
+          <pre class="bg-light rounded p-3 small mb-0 mt-2" style="max-height:260px;overflow-y:auto;word-break:break-all;white-space:pre-wrap"><code>{{ device_data | tojson(indent=2) }}</code></pre>
+        </details>
+
+      {% else %}
+        <div class="text-center py-3 text-muted small">
+          <i class="bi bi-hourglass display-6 d-block mb-2 text-secondary"></i>
+          No device code data available yet.
+        </div>
+      {% endif %}
+
+    </div>
+  </div>
+
+  {# ── Step 2: Authorization Status (only when device_data present) ──────── #}
+  {% if device_data %}
+  <div class="card shadow-sm mb-3">
+    <div class="card-header small fw-semibold bg-white d-flex align-items-center gap-2">
+      <span class="badge rounded-pill bg-primary">Step 2</span>
+      Authorization Status
+      <span class="badge bg-secondary ms-auto" id="poll-interval-badge">
+        polling every {{ [device_data.interval, 5] | max }}s
+      </span>
+    </div>
+    <div class="card-body">
+
+      <div id="poll-status" class="d-flex align-items-center gap-2 small text-muted mb-3">
+        <div class="spinner-border spinner-border-sm text-warning" role="status">
+          <span class="visually-hidden">Polling…</span>
+        </div>
+        <span>Waiting for user to authorize at the verification URL…</span>
+      </div>
+
+      <div id="token-result" class="d-none">
+        <div class="alert alert-success small mb-3 py-2">
+          <i class="bi bi-check-circle-fill me-1"></i>
+          <strong>Authorization approved!</strong> Token issued successfully.
+        </div>
+        <div class="card bg-light border-0 small mb-3">
+          <div class="card-body py-2 px-3">
+            <table class="table table-sm table-borderless mb-0" id="token-summary-table">
+            </table>
+          </div>
+        </div>
+        <details>
+          <summary class="small text-muted" style="cursor:pointer">Full token payload (JSON)</summary>
+          <pre class="bg-light rounded p-3 small mb-0 mt-2" id="token-full-json"
+               style="max-height:260px;overflow-y:auto;word-break:break-all;white-space:pre-wrap"><code></code></pre>
+        </details>
+      </div>
+
+      <div id="poll-error" class="d-none">
+      </div>
+
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+</div>
+
+{# ── Key takeaways ─────────────────────────────────────────────────────────── #}
+<div class="card bg-light border-0 shadow-sm mt-4">
+  <div class="card-body small">
+    <strong><i class="bi bi-lightbulb-fill text-warning me-1"></i>Key takeaways</strong>
+    <ul class="mb-0 mt-2">
+      <li>The <code>device_code</code> is a secret never shown to the user — only the short, human-typeable <code>user_code</code> is displayed.</li>
+      <li>Polling must respect the <code>interval</code> field; receiving <code>slow_down</code> means you must add at least 5 seconds to the current interval.</li>
+      <li>The <code>verification_uri_complete</code> pre-fills the user code in the URL — useful for QR codes on TV screens.</li>
+      <li>Device Flow requires a <strong>confidential client</strong> in Keycloak — the <code>client_secret</code> is included in the polling token request.</li>
+      <li>RFC 8628 is widely deployed: GitHub CLI, Google Cloud SDK, AWS CLI, and Azure CLI all use this flow.</li>
+    </ul>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{% if device_data %}
+<script>
+(function () {
+  const DEVICE_CODE   = {{ device_data.device_code | tojson }};
+  const BASE_INTERVAL = Math.max({{ device_data.interval }}, 5);
+  let   interval      = BASE_INTERVAL;
+  let   timerId       = null;
+
+  const statusEl   = document.getElementById('poll-status');
+  const resultEl   = document.getElementById('token-result');
+  const errorEl    = document.getElementById('poll-error');
+  const tableEl    = document.getElementById('token-summary-table');
+  const jsonEl     = document.getElementById('token-full-json').querySelector('code');
+  const badgeEl    = document.getElementById('poll-interval-badge');
+
+  function setStatus(html) {
+    statusEl.innerHTML = html;
+  }
+
+  function showError(msg) {
+    clearTimeout(timerId);
+    statusEl.classList.add('d-none');
+    errorEl.classList.remove('d-none');
+    errorEl.innerHTML = '<div class="alert alert-danger small py-2"><i class="bi bi-x-circle-fill me-1"></i>' + msg + '</div>';
+  }
+
+  function showToken(data) {
+    clearTimeout(timerId);
+    statusEl.classList.add('d-none');
+    resultEl.classList.remove('d-none');
+
+    const p = (data.token_info || {}).payload || {};
+    const rows = [
+      ['sub',                p.sub        ? p.sub.substring(0, 28) + '…' : '—'],
+      ['preferred_username', p.preferred_username || '—'],
+      ['expires_in',         data.expires_in ? data.expires_in + 's' : '—'],
+      ['roles',              ((p.realm_access || {}).roles || []).join(', ') || '—'],
+    ];
+    tableEl.innerHTML = rows.map(([k, v]) =>
+      '<tr><td class="text-muted" style="width:160px"><code>' + k + '</code></td><td><strong>' + v + '</strong></td></tr>'
+    ).join('');
+    jsonEl.textContent = JSON.stringify(p || data, null, 2);
+  }
+
+  function poll() {
+    fetch('/auth/device/poll?device_code=' + encodeURIComponent(DEVICE_CODE))
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'success') {
+          showToken(data);
+        } else if (data.status === 'authorization_pending') {
+          setStatus(
+            '<div class="spinner-border spinner-border-sm text-warning me-2" role="status"></div>' +
+            '<span>Waiting for user to authorize… (polling every ' + interval + 's)</span>'
+          );
+          timerId = setTimeout(poll, interval * 1000);
+        } else if (data.status === 'slow_down') {
+          interval += 5;
+          badgeEl.textContent = 'polling every ' + interval + 's';
+          setStatus(
+            '<div class="spinner-border spinner-border-sm text-secondary me-2" role="status"></div>' +
+            '<span>Server asked to slow down — now polling every ' + interval + 's</span>'
+          );
+          timerId = setTimeout(poll, interval * 1000);
+        } else if (data.status === 'expired_token') {
+          showError('The <code>device_code</code> has expired. Please reload the page to start a new flow.');
+        } else if (data.status === 'access_denied') {
+          showError('The user denied the authorization request.');
+        } else {
+          showError('Unexpected error: ' + (data.error || data.status || 'unknown'));
+        }
+      })
+      .catch(err => showError('Network error while polling: ' + err.message));
+  }
+
+  timerId = setTimeout(poll, interval * 1000);
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -184,10 +184,12 @@ All of the above is automated by the `keycloak-init` container on every `docker 
 - **Steps 2–5** are handled by `setup_token_exchange()` in `keycloak-init/setup.py`.
 - **Step 6** (the audience mapper) is declared in `keycloak/realm-export.json` via
   `protocolMappers` — it is applied during the initial realm import.
-- The `spiffe-service` Keycloak client (a separate concern) is also provisioned by
-  `keycloak-init` via `ensure_spiffe_service_client()`, which creates the client and assigns
-  `user-role` to its service account if they do not already exist. This handles the case
-  where the realm existed before `spiffe-service` was added to `realm-export.json`.
+- Additional clients are provisioned by `keycloak-init` via dedicated `ensure_*()` functions,
+  each idempotent (safe to re-run):
+  - `ensure_spiffe_service_client()` — creates `spiffe-service` client, assigns `user-role`
+  - `ensure_dpop_client()` — creates `dpop-client` with `dpop.bound.access.tokens: true`
+  - `ensure_device_client()` — creates `device-client` with Device Authorization Grant enabled
+  - `ensure_pkce_client()` — creates `pkce-client` as a public client with PKCE S256 enforced
 
 The manual steps are only required when:
 

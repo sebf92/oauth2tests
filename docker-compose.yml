@@ -20,7 +20,7 @@ services:
 
   # ── Keycloak — Identity Provider ────────────────────────────────────────────
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0
+    image: quay.io/keycloak/keycloak:26.0
     container_name: oauth2-keycloak
     environment:
       KEYCLOAK_ADMIN: admin
@@ -32,8 +32,6 @@ services:
       # Fix the hostname so the JWT `iss` claim is always http://localhost:8080/realms/demo
       KC_HOSTNAME: localhost
       KC_HTTP_ENABLED: "true"
-      KC_HOSTNAME_STRICT: "false"
-      KC_HOSTNAME_STRICT_HTTPS: "false"
       KC_LOG_LEVEL: INFO
       # Enable preview features for RFC 8693 token exchange (OBO / rescoping demo)
       KC_FEATURES: "preview"
@@ -48,7 +46,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"status\":' <&3"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"status\":' <&3"]
       interval: 15s
       timeout: 10s
       retries: 20
@@ -114,6 +112,9 @@ services:
       # middle-tier-client: used for the On-Behalf-Of (RFC 8693) token exchange demo
       MIDDLE_TIER_CLIENT_ID: middle-tier-client
       MIDDLE_TIER_CLIENT_SECRET: middle-tier-client-secret
+      DEVICE_CLIENT_ID: device-client
+      DEVICE_CLIENT_SECRET: device-client-secret
+      PKCE_CLIENT_ID: pkce-client
       RESOURCE_SERVER_URL: http://resource-server:8001
       SPIFFE_SERVICE_URL: http://spiffe-service:8002
       REDIRECT_URI: http://localhost:5000/auth/callback

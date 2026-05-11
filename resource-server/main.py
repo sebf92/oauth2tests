@@ -14,15 +14,27 @@ Token validation steps performed on every protected request:
 """
 
 import asyncio
+import base64
+import hashlib
+import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated
 
 import httpx
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Security, status
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes as crypto_hashes
+from cryptography.hazmat.primitives.asymmetric.ec import (
+    ECDSA,
+    EllipticCurvePublicNumbers,
+    SECP256R1,
+)
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
@@ -189,6 +201,122 @@ def get_current_user(
     return _decode_token(credentials.credentials)
 
 
+def _b64url_decode(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (4 - len(s) % 4))
+
+
+def _b64url_to_int(s: str) -> int:
+    return int.from_bytes(_b64url_decode(s), "big")
+
+
+def _validate_dpop_proof(
+    dpop_header: str,
+    token_payload: dict,
+    expected_htm: str,
+    expected_htu: str,
+    raw_token: str = "",
+) -> dict:
+    """
+    Validate a DPoP proof JWT per RFC 9449 §4.3.
+    Returns the decoded DPoP claims on success; raises HTTP 401 on any failure.
+    raw_token must be supplied at resource servers so the ath claim can be verified.
+    """
+    parts = dpop_header.split(".")
+    if len(parts) != 3:
+        raise HTTPException(status_code=401, detail="Invalid DPoP proof: not a three-part JWT")
+
+    try:
+        raw_header = json.loads(_b64url_decode(parts[0]))
+        raw_claims = json.loads(_b64url_decode(parts[1]))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Cannot base64-decode DPoP proof parts")
+
+    if raw_header.get("typ") != "dpop+jwt":
+        raise HTTPException(status_code=401, detail="DPoP proof typ must be 'dpop+jwt'")
+    if raw_header.get("alg") != "ES256":
+        raise HTTPException(status_code=401, detail="DPoP proof must use ES256")
+
+    jwk_data = raw_header.get("jwk", {})
+    if jwk_data.get("kty") != "EC" or jwk_data.get("crv") != "P-256":
+        raise HTTPException(status_code=401, detail="DPoP proof jwk must be an EC P-256 key")
+
+    # Reconstruct the public key from the embedded JWK
+    try:
+        pub_numbers = EllipticCurvePublicNumbers(
+            x=_b64url_to_int(jwk_data["x"]),
+            y=_b64url_to_int(jwk_data["y"]),
+            curve=SECP256R1(),
+        )
+        public_key = pub_numbers.public_key(default_backend())
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Cannot reconstruct DPoP public key: {exc}")
+
+    # Verify ECDSA signature (JWS raw R||S format → DER)
+    signing_input = f"{parts[0]}.{parts[1]}".encode()
+    sig_bytes = _b64url_decode(parts[2])
+    if len(sig_bytes) != 64:
+        raise HTTPException(status_code=401, detail="DPoP signature must be 64 bytes (R||S)")
+    r   = int.from_bytes(sig_bytes[:32], "big")
+    s   = int.from_bytes(sig_bytes[32:], "big")
+    try:
+        public_key.verify(encode_dss_signature(r, s), signing_input, ECDSA(crypto_hashes.SHA256()))
+    except Exception:
+        raise HTTPException(status_code=401, detail="DPoP proof signature verification failed")
+
+    # Validate htm and htu
+    if raw_claims.get("htm") != expected_htm:
+        raise HTTPException(
+            status_code=401,
+            detail=f"DPoP htm mismatch: expected '{expected_htm}', got '{raw_claims.get('htm')}'",
+        )
+    if raw_claims.get("htu") != expected_htu:
+        raise HTTPException(
+            status_code=401,
+            detail=f"DPoP htu mismatch: expected '{expected_htu}', got '{raw_claims.get('htu')}'",
+        )
+
+    # Validate freshness (proof must be ≤ 60 s old)
+    proof_age = time.time() - raw_claims.get("iat", 0)
+    if proof_age > 60 or proof_age < -10:
+        raise HTTPException(status_code=401, detail=f"DPoP proof is stale (age: {proof_age:.0f}s)")
+
+    # Verify key binding: token MUST have cnf.jkt and it MUST match the DPoP public key.
+    # Accepting tokens without cnf.jkt would let any valid JWT bypass sender-constraining.
+    expected_jkt = token_payload.get("cnf", {}).get("jkt")
+    if not expected_jkt:
+        raise HTTPException(
+            status_code=401,
+            detail="Access token is not DPoP-bound (cnf.jkt claim missing)",
+        )
+    canonical  = json.dumps(
+        {"crv": jwk_data["crv"], "kty": jwk_data["kty"], "x": jwk_data["x"], "y": jwk_data["y"]},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    actual_jkt = base64.urlsafe_b64encode(
+        hashlib.sha256(canonical.encode()).digest()
+    ).rstrip(b"=").decode()
+    if actual_jkt != expected_jkt:
+        raise HTTPException(
+            status_code=401,
+            detail="DPoP key thumbprint does not match token's cnf.jkt — token binding mismatch",
+        )
+
+    # Verify ath (access token hash) — required at resource servers per RFC 9449 §4.3.
+    # This ensures the proof cannot be detached and replayed with a different token.
+    if raw_token:
+        expected_ath = base64.urlsafe_b64encode(
+            hashlib.sha256(raw_token.encode()).digest()
+        ).rstrip(b"=").decode()
+        if raw_claims.get("ath") != expected_ath:
+            raise HTTPException(
+                status_code=401,
+                detail="DPoP ath claim missing or does not match access token hash",
+            )
+
+    return raw_claims
+
+
 def require_role(role: str):
     """
     FastAPI dependency factory — validates token AND checks for a specific realm role.
@@ -246,6 +374,7 @@ def root():
             "GET /api/users":            "Requires admin-role",
             "GET /api/admin/dashboard":  "Requires admin-role",
             "GET /api/token/info":       "Any valid JWT — returns decoded claims",
+            "GET /api/dpop-protected":   "DPoP-bound token + proof required (RFC 9449)",
         },
     }
 
@@ -338,6 +467,66 @@ def get_all_users(payload: dict = Depends(require_role("admin-role"))):
         "users": ALL_USERS,
         "total": len(ALL_USERS),
         "requested_by": payload.get("preferred_username"),
+        "timestamp": _utcnow(),
+    }
+
+
+@app.get("/api/dpop-protected", tags=["DPoP"])
+async def dpop_protected(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+    dpop: Annotated[str | None, Header()] = None,
+):
+    """
+    DPoP-protected endpoint (RFC 9449).
+
+    Requires:
+      - Authorization: DPoP <access_token>   (not Bearer)
+      - DPoP: <proof_jwt>                    (signed with the private key bound to the token)
+
+    The access token must contain a cnf.jkt claim, and the DPoP proof must be
+    signed by the matching private key. Even if the token is stolen, it cannot
+    be replayed without the private key.
+    """
+    if not dpop:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="DPoP header is required for this endpoint",
+            headers={"WWW-Authenticate": 'DPoP algs="ES256"'},
+        )
+    if not authorization or not authorization.startswith("DPoP "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This endpoint requires 'Authorization: DPoP <token>' (not Bearer)",
+            headers={"WWW-Authenticate": 'DPoP algs="ES256"'},
+        )
+
+    raw_token = authorization[5:]
+    payload   = _decode_token(raw_token)
+
+    # Derive the canonical URL the client addressed (strip query string only — no trailing-slash
+    # stripping, so client and server use the same normalization rule)
+    htu = str(request.url).split("?")[0]
+    dpop_claims = _validate_dpop_proof(dpop, payload, "GET", htu, raw_token=raw_token)
+
+    return {
+        "message": "DPoP-protected resource accessed successfully!",
+        "proof_of_possession_verified": True,
+        "binding": {
+            "cnf_jkt":   payload.get("cnf", {}).get("jkt"),
+            "proof_jti": dpop_claims.get("jti"),
+            "proof_htm": dpop_claims.get("htm"),
+            "proof_htu": dpop_claims.get("htu"),
+        },
+        "identity": {
+            "username": payload.get("preferred_username"),
+            "subject":  payload.get("sub"),
+            "roles":    payload.get("realm_access", {}).get("roles", []),
+        },
+        "security_note": (
+            "This token is sender-constrained — it can only be used by the holder of the "
+            "private EC key whose public key SHA-256 thumbprint matches cnf.jkt in the token."
+        ),
         "timestamp": _utcnow(),
     }
 

@@ -1,0 +1,438 @@
+{% extends "base.html" %}
+{% block title %}Token Introspection (RFC 7662){% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted small">
+    <i class="bi bi-arrow-left me-1"></i>Back to home
+  </a>
+</div>
+
+{# ── Title ───────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5" style="border-color:#6610f2!important">
+  <h1 class="h4 fw-bold mb-1">
+    <i class="bi bi-search me-2" style="color:#6610f2"></i>Token Introspection (RFC 7662)
+  </h1>
+  <p class="text-muted mb-0">
+    Resource servers can ask the Authorization Server <em>in real time</em> whether a token is
+    currently <strong>active</strong>. Unlike local JWT validation, introspection detects revoked
+    tokens even before they expire — at the cost of one extra network call per request.
+  </p>
+</div>
+
+<div class="row g-4">
+
+{# ── LEFT — Concepts ──────────────────────────────────────────────────────── #}
+<div class="col-lg-5">
+
+  <h5 class="section-title">Local Decode vs Introspection</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-body small">
+      <table class="table table-sm table-borderless mb-0">
+        <thead class="table-light">
+          <tr><th style="width:38%">Property</th><th>Local Decode</th><th>Introspection</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Network call?</td>
+            <td class="text-success">No — offline</td>
+            <td class="text-warning">Yes — to AS</td>
+          </tr>
+          <tr>
+            <td>Speed</td>
+            <td class="text-success">Very fast</td>
+            <td class="text-muted">One round-trip</td>
+          </tr>
+          <tr>
+            <td>Detects revocation?</td>
+            <td class="text-danger"><i class="bi bi-x-circle-fill me-1"></i>No</td>
+            <td class="text-success"><i class="bi bi-check-circle-fill me-1"></i>Yes</td>
+          </tr>
+          <tr>
+            <td>Works with opaque tokens?</td>
+            <td class="text-danger">No</td>
+            <td class="text-success">Yes</td>
+          </tr>
+          <tr>
+            <td>Real-time <code>active</code> flag?</td>
+            <td class="text-danger">No</td>
+            <td class="text-success">Yes</td>
+          </tr>
+          <tr>
+            <td>AS availability required?</td>
+            <td class="text-success">No</td>
+            <td class="text-danger">Yes</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h5 class="section-title">RFC 7662 Response Fields</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-body small">
+      <p class="mb-2 text-muted">
+        <code>active: false</code> means the token is currently invalid — either
+        <strong>expired</strong> or <strong>revoked</strong>. The AS does not distinguish
+        between the two in the response.
+      </p>
+      <table class="table table-sm table-borderless mb-0">
+        <tbody>
+          <tr>
+            <td><code class="text-success fw-semibold">active</code></td>
+            <td class="text-muted"><code>true</code> if usable right now; <code>false</code> otherwise</td>
+          </tr>
+          <tr>
+            <td><code>sub</code></td>
+            <td class="text-muted">Subject — the user or service the token was issued to</td>
+          </tr>
+          <tr>
+            <td><code>username</code></td>
+            <td class="text-muted">Human-readable username (Keycloak extension)</td>
+          </tr>
+          <tr>
+            <td><code>scope</code></td>
+            <td class="text-muted">Space-delimited list of granted scopes</td>
+          </tr>
+          <tr>
+            <td><code>client_id</code></td>
+            <td class="text-muted">The OAuth2 client that requested the token</td>
+          </tr>
+          <tr>
+            <td><code>token_type</code></td>
+            <td class="text-muted"><code>Bearer</code> for standard access tokens</td>
+          </tr>
+          <tr>
+            <td><code>exp</code></td>
+            <td class="text-muted">Expiry Unix timestamp — when the token <em>would</em> expire</td>
+          </tr>
+          <tr>
+            <td><code>iat</code></td>
+            <td class="text-muted">Issued-at Unix timestamp</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h5 class="section-title">When to Use Introspection</h5>
+  <div class="card shadow-sm mb-3">
+    <div class="card-body small">
+      <ul class="ps-3 mb-0">
+        <li class="mb-2">
+          <strong>Long-lived tokens</strong> — when access tokens have multi-hour lifetimes,
+          revocation without introspection means a compromised token stays valid until expiry.
+        </li>
+        <li class="mb-2">
+          <strong>Shared resource servers</strong> — multiple APIs trusting one AS can each
+          introspect rather than each managing key rotation.
+        </li>
+        <li class="mb-2">
+          <strong>Audit logging</strong> — the AS can record every introspection call, giving
+          a complete picture of token usage across services.
+        </li>
+        <li class="mb-2">
+          <strong>Opaque tokens</strong> — reference tokens (non-JWT) carry no embedded claims;
+          introspection is the <em>only</em> way to validate them.
+        </li>
+        <li>
+          <strong>Logout / session termination</strong> — after a user logs out, subsequent
+          introspection calls for their tokens will return <code>active: false</code> immediately.
+        </li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+
+{# ── RIGHT — Live data tabs ───────────────────────────────────────────────── #}
+<div class="col-lg-7">
+
+  <h5 class="section-title">Live Demo</h5>
+
+  <ul class="nav nav-tabs mb-0" id="introspectTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="rawtoken-tab" data-bs-toggle="tab"
+              data-bs-target="#rawtoken-pane" type="button" role="tab">
+        <i class="bi bi-file-earmark-code me-1"></i>Access Token
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="active-tab" data-bs-toggle="tab"
+              data-bs-target="#active-pane" type="button" role="tab">
+        <i class="bi bi-search me-1"></i>Introspect — Active
+        {% if introspect_active and introspect_active.data %}
+          <span class="badge bg-{{ 'success' if introspect_active.data.get('active') else 'danger' }} ms-1" style="font-size:.6rem">
+            {{ 'active' if introspect_active.data.get('active') else 'inactive' }}
+          </span>
+        {% endif %}
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="revoke-tab" data-bs-toggle="tab"
+              data-bs-target="#revoke-pane" type="button" role="tab">
+        <i class="bi bi-slash-circle me-1"></i>Revoke + Re-introspect
+        {% if introspect_revoked and introspect_revoked.data %}
+          <span class="badge bg-{{ 'danger' if not introspect_revoked.data.get('active') else 'warning' }} ms-1" style="font-size:.6rem">
+            {{ 'inactive' if not introspect_revoked.data.get('active') else 'still active' }}
+          </span>
+        {% endif %}
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="why-tab" data-bs-toggle="tab"
+              data-bs-target="#why-pane" type="button" role="tab">
+        <i class="bi bi-shield-exclamation me-1"></i>Why This Matters
+      </button>
+    </li>
+  </ul>
+
+  <div class="tab-content border border-top-0 rounded-bottom shadow-sm bg-white">
+
+    {# ── Access Token tab ─────────────────────────────────────────────────── #}
+    <div class="tab-pane fade show active p-3" id="rawtoken-pane" role="tabpanel">
+      <p class="small text-muted mb-3">
+        The raw access token (truncated for readability) and its locally-decoded payload.
+        This decode requires <strong>no network call</strong> — only the AS public key is needed
+        to verify the signature.
+      </p>
+
+      {% if access_token %}
+        <div class="mb-1 small fw-semibold">Raw access token (truncated)</div>
+        <pre class="bg-light rounded p-3 small mb-3" style="max-height:100px;overflow-y:auto;word-break:break-all;white-space:pre-wrap"><code class="font-monospace">{{ access_token[:120] }}…</code></pre>
+      {% endif %}
+
+      {% if local_decode and local_decode.payload %}
+        <div class="mb-1 d-flex align-items-center gap-2">
+          <span class="badge bg-secondary">Local decode</span>
+          <span class="small text-muted">No API call — signature verified with AS public key</span>
+        </div>
+        <pre class="bg-light rounded p-3 small mb-3" style="max-height:260px;overflow-y:auto;word-break:break-all;white-space:pre-wrap"><code>{{ local_decode.payload | tojson(indent=2) }}</code></pre>
+
+        <div class="alert alert-light border small mb-0">
+          <i class="bi bi-lightbulb-fill text-warning me-1"></i>
+          Local decode is fast and works offline — but it cannot tell you if this token has been
+          <strong>revoked</strong>. The next tabs show what introspection adds.
+        </div>
+      {% else %}
+        <div class="text-center py-4 text-muted small">
+          <i class="bi bi-file-earmark-x display-6 d-block mb-2 text-secondary"></i>
+          No access token available. Log in first to see introspection data.
+        </div>
+      {% endif %}
+    </div>
+
+    {# ── Introspect Active tab ─────────────────────────────────────────────── #}
+    <div class="tab-pane fade p-3" id="active-pane" role="tabpanel">
+      <p class="small text-muted mb-3">
+        The resource server calls the AS <code>/introspect</code> endpoint with the raw token.
+        The AS responds with a JSON object containing the real-time <code>active</code> flag.
+      </p>
+
+      {% if introspect_active %}
+        <div class="card bg-dark text-light mb-3" style="font-size:.73rem">
+          <div class="card-body py-2 px-3 font-monospace">
+            <div class="text-info">POST /realms/…/protocol/openid-connect/token/introspect</div>
+            <div class="text-secondary mt-1">Authorization: Basic &lt;client_credentials&gt;</div>
+            <div class="text-secondary">token=&lt;access_token&gt;</div>
+          </div>
+        </div>
+
+        <div class="d-flex align-items-center mb-2 gap-2">
+          <span class="badge bg-{{ 'success' if introspect_active.status_code == 200 else 'danger' }}">
+            {{ introspect_active.status_code }}
+          </span>
+          {% if introspect_active.data and introspect_active.data.get('active') %}
+            <span class="badge bg-success">
+              <i class="bi bi-check-circle-fill me-1"></i>active: true
+            </span>
+            <span class="small text-muted">Token is currently valid</span>
+          {% elif introspect_active.data %}
+            <span class="badge bg-danger">
+              <i class="bi bi-x-circle-fill me-1"></i>active: false
+            </span>
+          {% endif %}
+        </div>
+
+        {% if introspect_active.data %}
+          <pre class="bg-light rounded p-3 small mb-3" style="max-height:260px;overflow-y:auto;word-break:break-all;white-space:pre-wrap"><code>{{ introspect_active.data | tojson(indent=2) }}</code></pre>
+        {% endif %}
+
+        {% if introspect_active.data and introspect_active.data.get('active') %}
+          <div class="alert alert-success small py-2 mb-0">
+            <i class="bi bi-check-circle-fill me-1"></i>
+            The AS confirms this token is currently <strong>active</strong>. The resource server
+            can trust the claims and proceed.
+          </div>
+        {% endif %}
+      {% else %}
+        <div class="text-center py-4 text-muted small">
+          <i class="bi bi-search display-6 d-block mb-2 text-secondary"></i>
+          Introspection result not available.
+        </div>
+      {% endif %}
+    </div>
+
+    {# ── Revoke + Re-introspect tab ────────────────────────────────────────── #}
+    <div class="tab-pane fade p-3" id="revoke-pane" role="tabpanel">
+      <p class="small text-muted mb-3">
+        Revoking the <strong>refresh token</strong> invalidates the session. The access token's
+        JWT structure remains intact — local decode still succeeds — but the AS marks it inactive.
+      </p>
+
+      {# Revoke result #}
+      {% if revoke_result %}
+        <div class="mb-1 small fw-semibold">Step 1 — Revoke refresh token</div>
+        <div class="card bg-dark text-light mb-3" style="font-size:.73rem">
+          <div class="card-body py-2 px-3 font-monospace">
+            <div class="text-info">POST /realms/…/protocol/openid-connect/revoke</div>
+            <div class="text-secondary mt-1">token=&lt;refresh_token&gt;</div>
+            <div class="text-secondary">token_hint=refresh_token</div>
+          </div>
+        </div>
+        <div class="d-flex align-items-center mb-3 gap-2">
+          <span class="badge bg-{{ 'success' if revoke_result.status_code in (200, 204) else 'danger' }}">
+            {{ revoke_result.status_code }}
+          </span>
+          <span class="small text-muted">
+            {{ 'Refresh token revoked — session terminated.' if revoke_result.status_code in (200, 204) else 'Revocation failed.' }}
+          </span>
+        </div>
+      {% endif %}
+
+      {# Re-introspect result #}
+      {% if introspect_revoked %}
+        <div class="mb-1 small fw-semibold">Step 2 — Re-introspect the access token</div>
+
+        <div class="d-flex align-items-center mb-2 gap-2">
+          <span class="badge bg-{{ 'success' if introspect_revoked.status_code == 200 else 'danger' }}">
+            {{ introspect_revoked.status_code }}
+          </span>
+          {% if introspect_revoked.data and not introspect_revoked.data.get('active') %}
+            <span class="badge bg-danger">
+              <i class="bi bi-x-circle-fill me-1"></i>active: false
+            </span>
+            <span class="small text-muted">Token is no longer active</span>
+          {% elif introspect_revoked.data %}
+            <span class="badge bg-warning text-dark">
+              <i class="bi bi-exclamation-circle-fill me-1"></i>active: true
+            </span>
+          {% endif %}
+        </div>
+
+        {% if introspect_revoked.data %}
+          <pre class="bg-light rounded p-3 small mb-3" style="max-height:260px;overflow-y:auto;word-break:break-all;white-space:pre-wrap"><code>{{ introspect_revoked.data | tojson(indent=2) }}</code></pre>
+        {% endif %}
+
+        <div class="alert alert-danger small py-2 mb-0">
+          <i class="bi bi-exclamation-triangle-fill me-1"></i>
+          <strong>The access token JWT is structurally valid and not yet expired</strong> — local
+          decode would still accept it. But introspection reveals it is <strong>no longer
+          active</strong>. This is the gap that introspection closes.
+        </div>
+      {% else %}
+        <div class="text-center py-4 text-muted small">
+          <i class="bi bi-slash-circle display-6 d-block mb-2 text-secondary"></i>
+          Revocation data not available.
+        </div>
+      {% endif %}
+    </div>
+
+    {# ── Why This Matters tab ─────────────────────────────────────────────── #}
+    <div class="tab-pane fade p-3" id="why-pane" role="tabpanel">
+
+      <div class="card border-danger border-opacity-25 mb-3">
+        <div class="card-header small fw-semibold text-danger bg-white">
+          <i class="bi bi-person-fill-dash me-1"></i>Attack scenario — stolen access token after logout
+        </div>
+        <div class="card-body small">
+          <ol class="ps-3 mb-0">
+            <li class="mb-2">
+              User logs in and obtains an access token with a <strong>2-hour expiry</strong>.
+            </li>
+            <li class="mb-2">
+              An attacker exfiltrates the token (compromised proxy, log file, XSS).
+            </li>
+            <li class="mb-2">
+              The legitimate user notices and <strong>logs out</strong> — their session and
+              refresh token are revoked in Keycloak.
+            </li>
+            <li class="mb-2">
+              The attacker sends <code>Authorization: Bearer &lt;stolen_token&gt;</code>
+              to the API.
+            </li>
+            <li>
+              <span class="text-danger fw-semibold">Without introspection:</span>
+              the API verifies the JWT signature and <code>exp</code>, sees it is not expired,
+              and <strong>grants access</strong> for up to 2 hours post-logout.<br>
+              <span class="text-success fw-semibold">With introspection:</span>
+              the API asks the AS — which responds <code>active: false</code> — and
+              <strong>rejects the request immediately</strong>.
+            </li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="card border-0 bg-light mb-3">
+        <div class="card-body small">
+          <p class="fw-semibold mb-2">
+            <i class="bi bi-balance-scale me-1"></i>Choosing the right strategy
+          </p>
+          <table class="table table-sm table-borderless mb-0">
+            <thead class="table-light">
+              <tr><th>Strategy</th><th>Trade-off</th><th>Best for</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Short access token lifetime (1–5 min)</td>
+                <td>More token refreshes</td>
+                <td>High-security APIs</td>
+              </tr>
+              <tr>
+                <td>Introspection on every request</td>
+                <td>Extra AS round-trip</td>
+                <td>Long-lived or opaque tokens</td>
+              </tr>
+              <tr>
+                <td>Cached introspection (TTL = token exp)</td>
+                <td>Slightly delayed revocation detection</td>
+                <td>High-traffic resource servers</td>
+              </tr>
+              <tr>
+                <td>Local decode only</td>
+                <td>No revocation detection</td>
+                <td>Low-risk, offline APIs</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="alert alert-light border small mb-0">
+        <i class="bi bi-lightbulb-fill text-warning me-1"></i>
+        <strong>RFC 9700 (OAuth 2.0 Security BCP)</strong> recommends keeping access token
+        lifetimes short (minutes, not hours) as the primary defense, with introspection
+        or token binding as additional layers for sensitive resources.
+      </div>
+
+    </div>
+
+  </div>{# /tab-content #}
+</div>
+</div>
+
+{# ── Key takeaways ─────────────────────────────────────────────────────────── #}
+<div class="card bg-light border-0 shadow-sm mt-4">
+  <div class="card-body small">
+    <strong><i class="bi bi-lightbulb-fill text-warning me-1"></i>Key takeaways</strong>
+    <ul class="mb-0 mt-2">
+      <li><code>active: false</code> is intentionally ambiguous — the AS does not reveal whether a token expired or was revoked, preventing information leakage to callers.</li>
+      <li>Introspection is authenticated — the calling resource server must present its own <code>client_id</code> and <code>client_secret</code> (or a client assertion) to the AS.</li>
+      <li>A structurally valid, unexpired JWT can still be <code>active: false</code> — local decode alone is not a complete security check when revocation matters.</li>
+      <li>Keycloak's introspection endpoint returns <strong>full JWT claims</strong> for active tokens, so resource servers do not need to decode the token separately.</li>
+      <li>For high-traffic services, cache introspection responses with a TTL of 30–60 seconds to reduce AS load while keeping the revocation window short.</li>
+    </ul>
+  </div>
+</div>
+
+{% endblock %}

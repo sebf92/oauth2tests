@@ -176,9 +176,9 @@ JWT-SVID can only be used to talk to Keycloak, not forwarded to any other servic
 
 ## The SPIFFE→OAuth2 Bridge Pattern
 
-Keycloak 24 cannot natively validate a JWT-SVID as a client assertion (that requires
-Keycloak 26.4+ with the Federated Client Authentication feature). The bridge pattern works
-around this:
+This demo runs on **Keycloak 26.0**, which cannot yet natively validate a JWT-SVID as a
+client assertion (that requires Keycloak 26.4+ with the Federated Client Authentication
+feature). The bridge pattern works around this:
 
 ```
 spiffe-service                     Keycloak
@@ -375,9 +375,10 @@ Keycloak would:
 This eliminates the `client_secret` entirely. The only remaining secret in the system is the
 SPIRE server's private key — which never leaves the SPIRE server.
 
-To upgrade this demo:
+This demo currently uses **Keycloak 26.0**, which does not yet support Federated Client
+Authentication. To upgrade when 26.4+ is released:
 
-1. Change `keycloak` image to `quay.io/keycloak/keycloak:26.4` (or later).
+1. Change `keycloak` image to `quay.io/keycloak/keycloak:26.4` (or later) in `docker-compose.yml`.
 2. Configure a JWKS URL pointing to SPIRE's JWT authority endpoint in the Keycloak client's
    authentication settings (Federated Identity Providers → JWKS URL).
 3. Replace `exchange_spiffe_for_oauth2()` in `spiffe-service/main.py` to send the raw

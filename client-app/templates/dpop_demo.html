@@ -1,0 +1,431 @@
+{% extends "base.html" %}
+{% block title %}DPoP — Proof of Possession{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-decoration-none text-muted small">
+    <i class="bi bi-arrow-left me-1"></i>Back to home
+  </a>
+</div>
+
+{# ── Title ───────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-danger">
+  <h1 class="h4 fw-bold mb-1">
+    <i class="bi bi-patch-check-fill text-danger me-2"></i>DPoP — Demonstrating Proof of Possession (RFC 9449)
+  </h1>
+  <p class="text-muted mb-0">
+    A <strong>sender-constrained</strong> token that is cryptographically bound to a client-generated
+    EC key pair. Even if the token is intercepted, it is useless without the matching private key.
+  </p>
+</div>
+
+<div class="row g-4">
+
+{# ── LEFT — Concepts ──────────────────────────────────────────────────────── #}
+<div class="col-lg-5">
+
+  <h5 class="section-title">How DPoP Works</h5>
+  <div class="card shadow-sm mb-4">
+    <div class="card-body small">
+      <ol class="mb-3 ps-3">
+        <li class="mb-2">Client generates an <strong>ephemeral EC P-256 key pair</strong>.</li>
+        <li class="mb-2">
+          Client sends a <strong>DPoP proof</strong> — a short-lived signed JWT — along with
+          every token request. The proof contains the <em>public key</em>, the HTTP method,
+          the URI, a timestamp, and a unique <code>jti</code>.
+        </li>
+        <li class="mb-2">
+          Keycloak validates the proof and embeds the public key's
+          <strong>SHA-256 thumbprint</strong> (<code>cnf.jkt</code>) into the access token.
+        </li>
+        <li class="mb-2">
+          For every API call, the client generates a <em>new</em> DPoP proof bound to that
+          specific method + URL, plus the <code>ath</code> claim (SHA-256 of the access token).
+        </li>
+        <li>
+          The resource server verifies <em>both</em>: the access token signature <em>and</em>
+          the DPoP proof signature. The proof's public key thumbprint must match
+          <code>cnf.jkt</code> in the token.
+        </li>
+      </ol>
+      <div class="bg-light rounded p-2 font-monospace" style="font-size:.72rem">
+        <div class="text-secondary">POST /token   + DPoP: &lt;proof₁&gt;</div>
+        <div class="text-success">← access_token (cnf.jkt = SHA256(pub_key))</div>
+        <div class="text-secondary mt-1">GET /api/dpop-protected</div>
+        <div class="text-secondary">  Authorization: DPoP &lt;access_token&gt;</div>
+        <div class="text-secondary">  DPoP: &lt;proof₂  (htm+htu+ath)&gt;</div>
+        <div class="text-success">← 200 OK  (both token and proof verified)</div>
+      </div>
+    </div>
+  </div>
+
+  <h5 class="section-title">Bearer vs DPoP</h5>
+  <div class="card shadow-sm mb-4">
+    <div class="card-body small">
+      <table class="table table-sm table-borderless mb-0">
+        <thead class="table-light">
+          <tr><th>Property</th><th>Bearer (RFC 6750)</th><th>DPoP (RFC 9449)</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Token type</td>
+            <td>Possession only</td>
+            <td class="text-success fw-semibold">Sender-constrained</td>
+          </tr>
+          <tr>
+            <td>Stolen token usable?</td>
+            <td class="text-danger"><i class="bi bi-x-circle-fill me-1"></i>Yes</td>
+            <td class="text-success"><i class="bi bi-check-circle-fill me-1"></i>No</td>
+          </tr>
+          <tr>
+            <td>Auth header</td>
+            <td><code>Bearer &lt;token&gt;</code></td>
+            <td><code>DPoP &lt;token&gt;</code></td>
+          </tr>
+          <tr>
+            <td>Extra header</td>
+            <td>None</td>
+            <td><code>DPoP: &lt;proof&gt;</code></td>
+          </tr>
+          <tr>
+            <td>Token claim</td>
+            <td>None</td>
+            <td><code>cnf.jkt</code></td>
+          </tr>
+          <tr>
+            <td>Proof per request</td>
+            <td>No</td>
+            <td>Yes — bound to method + URL</td>
+          </tr>
+          <tr>
+            <td>Replay attack</td>
+            <td class="text-danger">Possible</td>
+            <td class="text-success">Blocked by <code>jti</code> + <code>iat</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h5 class="section-title">The Attack DPoP Prevents</h5>
+  <div class="card shadow-sm border-danger border-opacity-25 mb-3">
+    <div class="card-body small">
+      <p class="mb-2 text-danger fw-semibold"><i class="bi bi-shield-exclamation me-1"></i>With Bearer tokens:</p>
+      <p class="mb-3 text-muted">
+        If an attacker intercepts <code>Authorization: Bearer eyJ…</code> (e.g. via a
+        compromised proxy or log file), they can replay it from any machine until it expires.
+      </p>
+      <p class="mb-2 text-success fw-semibold"><i class="bi bi-shield-check me-1"></i>With DPoP:</p>
+      <p class="mb-0 text-muted">
+        The attacker also needs the private key. Without it, they cannot produce a valid
+        DPoP proof. The intercepted token alone is worthless.
+      </p>
+    </div>
+  </div>
+
+</div>
+
+{# ── RIGHT — Live data tabs ───────────────────────────────────────────────── #}
+<div class="col-lg-7">
+
+  <h5 class="section-title">Live Demo — alice / alice123</h5>
+
+  <ul class="nav nav-tabs mb-0" id="dpopTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="keypair-tab" data-bs-toggle="tab"
+              data-bs-target="#keypair-pane" type="button" role="tab">
+        <i class="bi bi-key me-1"></i>Key Pair
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tokenreq-tab" data-bs-toggle="tab"
+              data-bs-target="#tokenreq-pane" type="button" role="tab">
+        <i class="bi bi-send me-1"></i>Token Request
+        <span class="badge bg-{{ 'success' if token_result.success else 'danger' }} ms-1" style="font-size:.6rem">
+          {{ token_result.status_code }}
+        </span>
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="apicall-tab" data-bs-toggle="tab"
+              data-bs-target="#apicall-pane" type="button" role="tab">
+        <i class="bi bi-lightning me-1"></i>API Call
+        {% if api_result %}
+        <span class="badge bg-{{ 'success' if api_result.success else 'danger' }} ms-1" style="font-size:.6rem">
+          {{ api_result.status_code }}
+        </span>
+        {% endif %}
+      </button>
+    </li>
+  </ul>
+
+  <div class="tab-content border border-top-0 rounded-bottom shadow-sm bg-white">
+
+    {# ── Key Pair tab ──────────────────────────────────────────────────────── #}
+    <div class="tab-pane fade show active p-3" id="keypair-pane" role="tabpanel">
+      <p class="small text-muted mb-3">
+        Generated fresh for this demo run using EC P-256 (NIST curve <code>secp256r1</code>).
+        The private key is used in-place and never stored — it disappears when this page loads.
+      </p>
+
+      <div class="d-flex align-items-center mb-1">
+        <span class="badge bg-primary me-2">Public JWK</span>
+        <span class="small text-muted">sent inside every DPoP proof header</span>
+      </div>
+      <pre class="json-block mb-3" style="font-size:.75rem">{{ pub_jwk | tojson(indent=2) }}</pre>
+
+      <div class="card bg-light border-0 mb-3 small">
+        <div class="card-body py-2 px-3">
+          <table class="table table-sm table-borderless mb-0">
+            <tr>
+              <td class="text-muted" style="width:110px">Curve</td>
+              <td><code>P-256</code> (secp256r1, 128-bit security)</td>
+            </tr>
+            <tr>
+              <td class="text-muted">Algorithm</td>
+              <td><code>ES256</code> (ECDSA with SHA-256)</td>
+            </tr>
+            <tr>
+              <td class="text-muted">Key type</td>
+              <td><code>EC</code></td>
+            </tr>
+            <tr>
+              <td class="text-muted fw-semibold">cnf.jkt</td>
+              <td>
+                <code class="text-danger fw-semibold" style="word-break:break-all">{{ jkt }}</code>
+              </td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="alert alert-light border small mb-0">
+        <i class="bi bi-lightbulb-fill text-warning me-1"></i>
+        <strong>cnf.jkt</strong> is the SHA-256 thumbprint of the public JWK — computed per
+        RFC 7638 by hashing the canonical JSON of <code>{"crv","kty","x","y"}</code>.
+        Keycloak embeds this value in the <code>cnf</code> claim of the issued access token
+        so resource servers can verify the key binding.
+      </div>
+    </div>
+
+    {# ── Token Request tab ─────────────────────────────────────────────────── #}
+    <div class="tab-pane fade p-3" id="tokenreq-pane" role="tabpanel">
+
+      {# Request box #}
+      <div class="card bg-dark text-light mb-3" style="font-size:.73rem">
+        <div class="card-body py-2 px-3 font-monospace">
+          <div class="text-info">POST {{ token_htu }}</div>
+          <div class="text-secondary mt-1">Content-Type: application/x-www-form-urlencoded</div>
+          <div class="text-warning mt-1">DPoP: &lt;proof JWT&gt;</div>
+          <div class="text-secondary mt-1">grant_type=password &amp; client_id=dpop-client &amp; username=alice &amp; …</div>
+        </div>
+      </div>
+
+      {# DPoP proof decoded #}
+      {% if token_proof_info %}
+      <p class="small fw-semibold mb-1">DPoP Proof — Header</p>
+      <div class="card bg-light border-0 mb-3 small">
+        <div class="card-body py-2 px-3">
+          <table class="table table-sm table-borderless mb-0">
+            <tr>
+              <td class="text-muted" style="width:60px"><code>typ</code></td>
+              <td><code class="text-danger">{{ token_proof_info.header.get('typ', '—') }}</code></td>
+              <td class="text-muted small">Must be <code>dpop+jwt</code></td>
+            </tr>
+            <tr>
+              <td class="text-muted"><code>alg</code></td>
+              <td><code>{{ token_proof_info.header.get('alg', '—') }}</code></td>
+              <td class="text-muted small">ECDSA P-256</td>
+            </tr>
+            <tr>
+              <td class="text-muted"><code>jwk</code></td>
+              <td><span class="badge bg-primary">EC P-256 public key</span></td>
+              <td class="text-muted small">Embedded, not a key ID</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <p class="small fw-semibold mb-1">DPoP Proof — Claims</p>
+      <div class="card bg-light border-0 mb-3 small">
+        <div class="card-body py-2 px-3">
+          <table class="table table-sm table-borderless mb-0">
+            <tr>
+              <td class="text-muted" style="width:60px"><code>htm</code></td>
+              <td><code class="text-success">{{ token_proof_info.payload.get('htm', '—') }}</code></td>
+              <td class="text-muted small">HTTP method</td>
+            </tr>
+            <tr>
+              <td class="text-muted"><code>htu</code></td>
+              <td><code style="font-size:.7em;word-break:break-all">{{ token_proof_info.payload.get('htu', '—') }}</code></td>
+              <td class="text-muted small">Target URI</td>
+            </tr>
+            <tr>
+              <td class="text-muted"><code>iat</code></td>
+              <td><code>{{ token_proof_info.payload.get('iat_human', token_proof_info.payload.get('iat', '—')) }}</code></td>
+              <td class="text-muted small">Issued at (freshness)</td>
+            </tr>
+            <tr>
+              <td class="text-muted"><code>jti</code></td>
+              <td><code style="font-size:.72em">{{ token_proof_info.payload.get('jti', '—') }}</code></td>
+              <td class="text-muted small">Unique ID (replay prevention)</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      {# Keycloak response #}
+      <div class="d-flex align-items-center mb-2">
+        <span class="badge bg-{{ 'success' if token_result.success else 'danger' }} me-2">
+          {{ token_result.status_code }}
+        </span>
+        <span class="small text-muted">Keycloak response</span>
+      </div>
+
+      {% if token_result.success %}
+        <div class="alert alert-success small mb-3 py-2">
+          <i class="bi bi-check-circle-fill me-1"></i>
+          Token issued with DPoP binding — see <code>cnf.jkt</code> in the access token below.
+        </div>
+        {% if dpop_token_info and dpop_token_info.payload %}
+          <p class="small fw-semibold mb-1">Access Token — Key Binding Claim</p>
+          <div class="card border-success mb-3 small">
+            <div class="card-body py-2 px-3">
+              <table class="table table-sm table-borderless mb-0">
+                <tr>
+                  <td class="text-muted" style="width:110px"><code>cnf.jkt</code></td>
+                  <td>
+                    <code class="text-danger fw-semibold" style="word-break:break-all">
+                      {{ dpop_token_info.payload.get('cnf', {}).get('jkt', '— not present —') }}
+                    </code>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="text-muted"><code>sub</code></td>
+                  <td><code>{{ dpop_token_info.payload.get('sub', '—')[:28] }}…</code></td>
+                </tr>
+                <tr>
+                  <td class="text-muted"><code>preferred_username</code></td>
+                  <td><strong>{{ dpop_token_info.payload.get('preferred_username', '—') }}</strong></td>
+                </tr>
+              </table>
+            </div>
+          </div>
+          <details class="mb-0">
+            <summary class="small text-muted" style="cursor:pointer">Full access token payload (JSON)</summary>
+            <pre class="json-block mt-2" style="font-size:.68rem">{{ dpop_token_info.payload | tojson(indent=2) }}</pre>
+          </details>
+        {% endif %}
+
+      {% else %}
+        <div class="alert alert-danger small mb-3">
+          <i class="bi bi-x-circle-fill me-1"></i>
+          <strong>Token request failed ({{ token_result.status_code }}).</strong>
+          {% if token_result.status_code in (400, 401) %}
+          <br>The <code>dpop-client</code> may not exist yet — the <code>keycloak-init</code>
+          container creates it at startup. Check its logs:
+          <pre class="mt-2 mb-1 bg-dark text-light p-2 rounded" style="font-size:.7rem">docker compose logs keycloak-init</pre>
+          To re-run setup without a full rebuild:
+          <pre class="mb-0 bg-dark text-light p-2 rounded" style="font-size:.7rem">docker compose up keycloak-init</pre>
+          {% endif %}
+        </div>
+        <pre class="json-block" style="font-size:.7rem">{{ token_result.data | tojson(indent=2) }}</pre>
+      {% endif %}
+    </div>
+
+    {# ── API Call tab ──────────────────────────────────────────────────────── #}
+    <div class="tab-pane fade p-3" id="apicall-pane" role="tabpanel">
+      {% if api_result %}
+
+        {# Request box #}
+        <div class="card bg-dark text-light mb-3" style="font-size:.73rem">
+          <div class="card-body py-2 px-3 font-monospace">
+            <div class="text-info">GET {{ api_url_display }}</div>
+            <div class="text-warning mt-1">Authorization: DPoP &lt;access_token&gt;</div>
+            <div class="text-warning">DPoP: &lt;proof JWT&gt;</div>
+          </div>
+        </div>
+
+        {# API call proof #}
+        {% if api_proof_info %}
+        <p class="small fw-semibold mb-1">DPoP Proof — Claims (API call)</p>
+        <div class="card bg-light border-0 mb-3 small">
+          <div class="card-body py-2 px-3">
+            <table class="table table-sm table-borderless mb-0">
+              <tr>
+                <td class="text-muted" style="width:60px"><code>htm</code></td>
+                <td><code class="text-success">{{ api_proof_info.payload.get('htm', '—') }}</code></td>
+                <td class="text-muted small">Must match the actual HTTP method</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><code>htu</code></td>
+                <td><code style="font-size:.7em;word-break:break-all">{{ api_proof_info.payload.get('htu', '—') }}</code></td>
+                <td class="text-muted small">Must match the actual URI</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><code>ath</code></td>
+                <td><code style="font-size:.7em;word-break:break-all">{{ api_proof_info.payload.get('ath', '—') }}</code></td>
+                <td class="text-muted small">SHA-256 of the access token — binds proof to token</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><code>jti</code></td>
+                <td><code style="font-size:.72em">{{ api_proof_info.payload.get('jti', '—') }}</code></td>
+                <td class="text-muted small">Different <code>jti</code> than token request proof</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+        {% endif %}
+
+        {# Response #}
+        <div class="d-flex align-items-center mb-2">
+          <span class="badge bg-{{ 'success' if api_result.success else 'danger' }} me-2">
+            {{ api_result.status_code }}
+          </span>
+          <span class="small text-muted">Resource server response</span>
+        </div>
+
+        {% if api_result.success %}
+          <div class="alert alert-success small mb-3 py-2">
+            <i class="bi bi-patch-check-fill me-1"></i>
+            Resource server verified both the token signature <em>and</em> the DPoP proof.
+          </div>
+        {% else %}
+          <div class="alert alert-danger small mb-3 py-2">
+            <i class="bi bi-x-circle-fill me-1"></i>
+            API call failed — token exchange may have not produced a token.
+          </div>
+        {% endif %}
+
+        <pre class="json-block" style="font-size:.72rem">{{ api_result.data | tojson(indent=2) }}</pre>
+
+      {% else %}
+        <div class="text-center py-4">
+          <i class="bi bi-slash-circle display-5 text-secondary mb-3 d-block"></i>
+          <p class="text-muted mb-0">API call was not attempted — token request failed first.</p>
+          <p class="small text-muted">Fix the token request error and try again.</p>
+        </div>
+      {% endif %}
+    </div>
+
+  </div>{# /tab-content #}
+</div>
+</div>
+
+{# ── Key takeaways ─────────────────────────────────────────────────────────── #}
+<div class="card bg-light border-0 shadow-sm mt-4">
+  <div class="card-body small">
+    <strong><i class="bi bi-lightbulb-fill text-warning me-1"></i>Key takeaways</strong>
+    <ul class="mb-0 mt-2">
+      <li>A DPoP proof is a signed JWT generated <em>per request</em> — it is not reusable and carries no sensitive data.</li>
+      <li>The access token's <code>cnf.jkt</code> claim locks the token to one specific key pair — not one specific machine.</li>
+      <li>The <code>ath</code> claim in the API call proof prevents using the proof with a different token.</li>
+      <li>Each proof has a unique <code>jti</code>; resource servers can keep a short-lived set of seen JTIs to block replays within the freshness window.</li>
+      <li>DPoP is required by <strong>FAPI 2.0</strong> (Financial-grade API) and is recommended by the OAuth 2.0 Security Best Current Practice (RFC 9700).</li>
+      <li>Keycloak requires <code>KC_FEATURES=preview</code> and the <code>dpop.bound.access.tokens: true</code> client attribute — both configured in this demo.</li>
+    </ul>
+  </div>
+</div>
+
+{% endblock %}

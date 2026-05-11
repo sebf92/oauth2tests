@@ -23,6 +23,7 @@ import time
 import httpx
 
 KC_URL     = "http://keycloak:8080"
+KC_MGMT    = "http://keycloak:9000"   # management interface (health, metrics) — KC 26+
 REALM      = "demo"
 ADMIN_USER = "admin"
 ADMIN_PASS = "admin"
@@ -53,11 +54,11 @@ def _put(url: str, headers: dict, **kw) -> httpx.Response:
 # ── wait ───────────────────────────────────────────────────────────────────────
 
 def wait_for_keycloak() -> None:
-    """Wait until /health/ready returns 200."""
-    print(f"Waiting for Keycloak at {KC_URL} …")
+    """Wait until /health/ready returns 200 on the management interface (port 9000 in KC 26+)."""
+    print(f"Waiting for Keycloak at {KC_MGMT} …")
     for attempt in range(60):
         try:
-            r = httpx.get(f"{KC_URL}/health/ready", timeout=5)
+            r = httpx.get(f"{KC_MGMT}/health/ready", timeout=5)
             if r.status_code == 200:
                 print("✓ Keycloak HTTP server is up")
                 return
@@ -264,6 +265,145 @@ def ensure_spiffe_service_client(token: str) -> None:
         print("  user-role assigned to spiffe-service service account")
 
 
+# ── dpop-client ────────────────────────────────────────────────────────────────
+
+def ensure_dpop_client(token: str) -> None:
+    """
+    Ensure the dpop-client Keycloak client exists with DPoP enforcement enabled.
+
+    dpop.bound.access.tokens: true means every token request to this client MUST
+    include a valid DPoP proof header — plain Bearer requests are rejected.
+    directAccessGrantsEnabled: true is required for the Password Grant demo flow.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    existing = httpx.get(
+        f"{base}/clients", headers=h, params={"clientId": "dpop-client"}, timeout=10
+    ).json()
+
+    if existing:
+        client_id = existing[0]["id"]
+        print(f"  dpop-client            id = {client_id} (already exists)")
+    else:
+        r = httpx.post(
+            f"{base}/clients",
+            headers=h,
+            json={
+                "clientId":                  "dpop-client",
+                "secret":                    "dpop-client-secret",
+                "enabled":                   True,
+                "serviceAccountsEnabled":    False,
+                "standardFlowEnabled":       False,
+                "directAccessGrantsEnabled": True,
+                "publicClient":              False,
+                "protocol":                  "openid-connect",
+                "defaultClientScopes":       ["web-origins", "acr", "profile", "roles", "email"],
+                "attributes": {
+                    "dpop.bound.access.tokens": "true",
+                },
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        location  = r.headers.get("Location", "")
+        client_id = location.rstrip("/").split("/")[-1]
+        print(f"  dpop-client            id = {client_id} (created)")
+
+
+# ── device-client ─────────────────────────────────────────────────────────────
+
+def ensure_device_client(token: str) -> None:
+    """
+    Ensure the device-client Keycloak client exists with Device Authorization Grant enabled.
+
+    oauth2.device.authorization.grant.enabled: true activates the RFC 8628 device flow.
+    standardFlowEnabled and directAccessGrantsEnabled are both false — this client is
+    exclusively for the device code grant.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    existing = httpx.get(
+        f"{base}/clients", headers=h, params={"clientId": "device-client"}, timeout=10
+    ).json()
+
+    if existing:
+        client_id = existing[0]["id"]
+        print(f"  device-client          id = {client_id} (already exists)")
+    else:
+        r = httpx.post(
+            f"{base}/clients",
+            headers=h,
+            json={
+                "clientId":                  "device-client",
+                "secret":                    "device-client-secret",
+                "enabled":                   True,
+                "serviceAccountsEnabled":    False,
+                "standardFlowEnabled":       False,
+                "directAccessGrantsEnabled": False,
+                "publicClient":              False,
+                "protocol":                  "openid-connect",
+                "defaultClientScopes":       ["web-origins", "acr", "profile", "roles", "email"],
+                "attributes": {
+                    "oauth2.device.authorization.grant.enabled": "true",
+                },
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        location  = r.headers.get("Location", "")
+        client_id = location.rstrip("/").split("/")[-1]
+        print(f"  device-client          id = {client_id} (created)")
+
+
+# ── pkce-client ────────────────────────────────────────────────────────────────
+
+def ensure_pkce_client(token: str) -> None:
+    """
+    Ensure the pkce-client Keycloak client exists with PKCE enforcement enabled.
+
+    publicClient: true — no client secret; the code_verifier provides the binding.
+    pkce.code.challenge.method: S256 — Keycloak rejects auth code requests that
+    omit a code_challenge, enforcing PKCE for every Authorization Code exchange.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    existing = httpx.get(
+        f"{base}/clients", headers=h, params={"clientId": "pkce-client"}, timeout=10
+    ).json()
+
+    if existing:
+        client_id = existing[0]["id"]
+        print(f"  pkce-client            id = {client_id} (already exists)")
+    else:
+        r = httpx.post(
+            f"{base}/clients",
+            headers=h,
+            json={
+                "clientId":                  "pkce-client",
+                "enabled":                   True,
+                "serviceAccountsEnabled":    False,
+                "standardFlowEnabled":       True,
+                "directAccessGrantsEnabled": False,
+                "publicClient":              True,
+                "protocol":                  "openid-connect",
+                "redirectUris":              ["http://localhost:5000/auth/callback"],
+                "webOrigins":                ["http://localhost:5000"],
+                "defaultClientScopes":       ["web-origins", "acr", "profile", "roles", "email"],
+                "attributes": {
+                    "pkce.code.challenge.method": "S256",
+                },
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        location  = r.headers.get("Location", "")
+        client_id = location.rstrip("/").split("/")[-1]
+        print(f"  pkce-client            id = {client_id} (created)")
+
+
 # ── entry point ────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -275,6 +415,15 @@ def main() -> None:
     token = get_admin_token()
     ensure_spiffe_service_client(token)
     print("\n✓ SPIFFE service client setup complete!")
+    token = get_admin_token()
+    ensure_dpop_client(token)
+    print("\n✓ DPoP client setup complete!")
+    token = get_admin_token()
+    ensure_device_client(token)
+    print("\n✓ Device Authorization Grant client setup complete!")
+    token = get_admin_token()
+    ensure_pkce_client(token)
+    print("\n✓ PKCE client setup complete!")
 
 
 if __name__ == "__main__":

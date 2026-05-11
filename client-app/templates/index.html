@@ -7,9 +7,10 @@
 <div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-primary">
   <h1 class="h4 fw-bold mb-1"><i class="bi bi-shield-lock text-primary me-2"></i>OAuth2 + JWT with Keycloak</h1>
   <p class="text-muted mb-0">
-    Six flows demonstrated end-to-end: three OAuth2 grant types, RFC 8693 token exchange,
-    token downscoping, and SPIFFE workload identity — all backed by <strong>Keycloak</strong>
-    and validated by the <strong>Resource Server</strong>.
+    Eleven flows demonstrated end-to-end: three OAuth2 grant types and eight advanced flows —
+    OBO token exchange, downscoping, SPIFFE workload identity, OIDC, DPoP proof of possession,
+    Device Authorization Grant, PKCE, and Token Introspection —
+    all backed by <strong>Keycloak 26</strong> and validated by the <strong>Resource Server</strong>.
   </p>
 </div>
 
@@ -351,6 +352,29 @@
     </div>
   </div>
 
+  {# DPoP — Proof of Possession #}
+  <div class="col-md-6 col-lg-3">
+    <div class="card flow-card shadow-sm border-start border-4 border-danger h-100">
+      <div class="card-body d-flex flex-column">
+        <div class="d-flex align-items-center mb-2">
+          <span class="badge bg-danger me-2">8</span>
+          <h6 class="mb-0">DPoP — Proof of Possession</h6>
+        </div>
+        <span class="badge bg-danger mb-2 align-self-start">Sender-Constrained</span>
+        <p class="card-text text-muted small mb-3">
+          Cryptographically binds an access token to an EC key pair. A stolen
+          token is useless without the matching private key. RFC 9449.
+        </p>
+        <div class="bg-light rounded p-2 small font-monospace mb-3">
+          keygen → DPoP proof → token (cnf.jkt) → API proof
+        </div>
+        <a href="/auth/dpop" class="btn btn-danger w-100 mt-auto">
+          <i class="bi bi-patch-check me-1"></i>Run DPoP Demo
+        </a>
+      </div>
+    </div>
+  </div>
+
   {# OIDC Identity Layer #}
   <div class="col-md-6 col-lg-3">
     <div class="card flow-card shadow-sm border-start border-4 h-100" style="border-color:#6f42c1!important">
@@ -376,6 +400,78 @@
             <i class="bi bi-lock me-1"></i>Log in first
           </button>
         {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# Device Authorization Grant #}
+  <div class="col-md-6 col-lg-3">
+    <div class="card flow-card shadow-sm border-start border-4 h-100" style="border-color:#fd7e14!important">
+      <div class="card-body d-flex flex-column">
+        <div class="d-flex align-items-center mb-2">
+          <span class="badge me-2" style="background:#fd7e14">9</span>
+          <h6 class="mb-0">Device Authorization</h6>
+        </div>
+        <span class="badge mb-2 align-self-start" style="background:#fd7e14">RFC 8628</span>
+        <p class="card-text text-muted small mb-3">
+          For CLIs, IoT devices, and smart TVs — no browser on the device.
+          A short <code>user_code</code> is displayed; the user approves on a
+          separate device. Client polls until granted.
+        </p>
+        <div class="bg-light rounded p-2 small font-monospace mb-3">
+          device_code + user_code → poll → <em>token on approval</em>
+        </div>
+        <a href="/auth/device" class="btn w-100 text-white mt-auto" style="background:#fd7e14">
+          <i class="bi bi-tv me-1"></i>Run Device Flow
+        </a>
+      </div>
+    </div>
+  </div>
+
+  {# PKCE #}
+  <div class="col-md-6 col-lg-3">
+    <div class="card flow-card shadow-sm border-start border-4 h-100" style="border-color:#20c997!important">
+      <div class="card-body d-flex flex-column">
+        <div class="d-flex align-items-center mb-2">
+          <span class="badge me-2" style="background:#20c997">10</span>
+          <h6 class="mb-0">PKCE</h6>
+        </div>
+        <span class="badge mb-2 align-self-start" style="background:#20c997">RFC 7636</span>
+        <p class="card-text text-muted small mb-3">
+          Hardens the Authorization Code flow for public clients. A
+          <code>code_verifier</code> secret ties the auth code to the exact
+          client that generated it — stolen codes are useless.
+        </p>
+        <div class="bg-light rounded p-2 small font-monospace mb-3">
+          verifier → S256 challenge → code → <em>token</em>
+        </div>
+        <a href="/auth/pkce" class="btn w-100 text-white mt-auto" style="background:#20c997">
+          <i class="bi bi-shield-lock-fill me-1"></i>Try PKCE Flow
+        </a>
+      </div>
+    </div>
+  </div>
+
+  {# Token Introspection #}
+  <div class="col-md-6 col-lg-3">
+    <div class="card flow-card shadow-sm border-start border-4 h-100" style="border-color:#6610f2!important">
+      <div class="card-body d-flex flex-column">
+        <div class="d-flex align-items-center mb-2">
+          <span class="badge me-2" style="background:#6610f2">11</span>
+          <h6 class="mb-0">Token Introspection</h6>
+        </div>
+        <span class="badge mb-2 align-self-start" style="background:#6610f2">RFC 7662</span>
+        <p class="card-text text-muted small mb-3">
+          Resource servers ask the AS in real time: "is this token still
+          valid?" Detects revocation instantly — something local JWT
+          decode cannot do.
+        </p>
+        <div class="bg-light rounded p-2 small font-monospace mb-3">
+          token → /introspect → <em>active: true/false</em>
+        </div>
+        <a href="/auth/introspect" class="btn w-100 text-white mt-auto" style="background:#6610f2">
+          <i class="bi bi-search me-1"></i>Inspect a Token
+        </a>
       </div>
     </div>
   </div>

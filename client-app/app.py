@@ -1,8 +1,7 @@
 """
 Client Application — Flask OAuth2 demo.
 
-Demonstrates three OAuth2 grant types, three advanced token exchange patterns,
-and SPIFFE workload identity:
+Demonstrates three OAuth2 grant types and eight advanced flows:
   1. Authorization Code Flow  — the standard, browser-redirect-based flow
   2. Resource Owner Password Credentials (ROPC) — direct username/password exchange
   3. Client Credentials — machine-to-machine, no user involved
@@ -10,6 +9,10 @@ and SPIFFE workload identity:
   5. Token Rescoping — RFC 8693 downscoping, strip roles from a token
   6. SPIFFE/SPIRE — workload identity: JWT-SVID → OAuth2 bridge → resource server
   7. OIDC Identity Layer — id_token, UserInfo endpoint, Discovery document
+  8. DPoP — RFC 9449 proof of possession, sender-constrained tokens
+  9. Device Authorization Grant — RFC 8628 device code flow for browserless clients
+ 10. PKCE — RFC 7636 proof key for code exchange, public client hardening
+ 11. Token Introspection — RFC 7662 remote active/revoked token state lookup
 
 After obtaining a token, the app uses it to call the protected Resource Server
 and shows the raw + decoded JWT to help understand what is inside the token.
@@ -23,7 +26,13 @@ URL layout:
   /auth/token-exchange/obo        On-Behalf-Of token exchange demo (RFC 8693)
   /auth/token-exchange/rescope    Token downscoping / rescoping demo (RFC 8693)
   /auth/spiffe                    SPIFFE workload identity → OAuth2 demo
+  /auth/dpop                      DPoP proof of possession demo (RFC 9449)
   /auth/oidc                      OIDC identity layer demo (id_token, UserInfo, Discovery)
+  /auth/device                    Device Authorization Grant demo (RFC 8628)
+  /auth/device/poll               AJAX polling endpoint for device flow status
+  /auth/pkce                      Start PKCE Authorization Code flow (RFC 7636)
+  /auth/pkce/result               PKCE result page (after Keycloak callback)
+  /auth/introspect                Token Introspection demo (RFC 7662)
   /auth/refresh                   Refresh the current access token
   /auth/logout                    Clear session + SSO logout from Keycloak
   /token/inspect                  Detailed JWT inspection page
@@ -31,6 +40,7 @@ URL layout:
 """
 
 import base64
+import hashlib
 import json
 import os
 import secrets
@@ -39,7 +49,11 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import requests
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes as crypto_hashes
+from cryptography.hazmat.primitives.asymmetric.ec import ECDSA, SECP256R1, generate_private_key
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
@@ -58,14 +72,83 @@ SVC_CLIENT_SECRET = os.getenv("SERVICE_CLIENT_SECRET", "service-client-secret")
 MIDDLE_CLIENT_ID     = os.getenv("MIDDLE_TIER_CLIENT_ID",     "middle-tier-client")
 MIDDLE_CLIENT_SECRET = os.getenv("MIDDLE_TIER_CLIENT_SECRET", "middle-tier-client-secret")
 
+DPOP_CLIENT_ID     = os.getenv("DPOP_CLIENT_ID",     "dpop-client")
+DPOP_CLIENT_SECRET = os.getenv("DPOP_CLIENT_SECRET", "dpop-client-secret")
+
+DEVICE_CLIENT_ID     = os.getenv("DEVICE_CLIENT_ID",     "device-client")
+DEVICE_CLIENT_SECRET = os.getenv("DEVICE_CLIENT_SECRET", "device-client-secret")
+PKCE_CLIENT_ID       = os.getenv("PKCE_CLIENT_ID",       "pkce-client")
+
 RESOURCE_URL  = os.getenv("RESOURCE_SERVER_URL", "http://resource-server:8001")
 SPIFFE_URL    = os.getenv("SPIFFE_SERVICE_URL",  "http://spiffe-service:8002")
 REDIRECT_URI  = os.getenv("REDIRECT_URI", "http://localhost:5000/auth/callback")
 
 # Keycloak endpoints
-KC_AUTH_URL    = f"{KC_EXT}/realms/{REALM}/protocol/openid-connect/auth"
-KC_TOKEN_URL   = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/token"
-KC_LOGOUT_URL  = f"{KC_EXT}/realms/{REALM}/protocol/openid-connect/logout"
+KC_AUTH_URL       = f"{KC_EXT}/realms/{REALM}/protocol/openid-connect/auth"
+KC_TOKEN_URL      = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/token"
+KC_LOGOUT_URL     = f"{KC_EXT}/realms/{REALM}/protocol/openid-connect/logout"
+KC_DEVICE_URL     = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/auth/device"
+KC_INTROSPECT_URL = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/token/introspect"
+KC_REVOKE_URL     = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/revoke"
+
+
+# ── DPoP helpers ───────────────────────────────────────────────────────────────
+
+def _b64url(data: bytes) -> str:
+    """Base64url-encode without padding."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def generate_dpop_keypair():
+    """Generate an ephemeral EC P-256 key pair. Returns (private_key, public_jwk_dict)."""
+    priv = generate_private_key(SECP256R1(), default_backend())
+    nums = priv.public_key().public_numbers()
+    pub_jwk = {
+        "kty": "EC",
+        "crv": "P-256",
+        "x":   _b64url(nums.x.to_bytes(32, "big")),
+        "y":   _b64url(nums.y.to_bytes(32, "big")),
+    }
+    return priv, pub_jwk
+
+
+def jwk_thumbprint(pub_jwk: dict) -> str:
+    """Compute the RFC 7638 JWK thumbprint (SHA-256 of canonical key members)."""
+    canonical = json.dumps(
+        {"crv": pub_jwk["crv"], "kty": pub_jwk["kty"], "x": pub_jwk["x"], "y": pub_jwk["y"]},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return _b64url(hashlib.sha256(canonical.encode()).digest())
+
+
+def make_dpop_proof(
+    priv_key,
+    pub_jwk: dict,
+    htm: str,
+    htu: str,
+    access_token: str | None = None,
+) -> str:
+    """
+    Build a signed DPoP proof JWT (RFC 9449).
+
+    htm: HTTP method in uppercase ("POST", "GET", …)
+    htu: Full URI without query/fragment
+    access_token: if provided, adds the ath claim (required at resource servers)
+    """
+    header = {"typ": "dpop+jwt", "alg": "ES256", "jwk": pub_jwk}
+    claims = {"jti": secrets.token_urlsafe(16), "htm": htm, "htu": htu, "iat": int(time.time())}
+    if access_token is not None:
+        claims["ath"] = _b64url(hashlib.sha256(access_token.encode()).digest())
+
+    h_b64 = _b64url(json.dumps(header, separators=(",", ":")).encode())
+    p_b64 = _b64url(json.dumps(claims, separators=(",", ":")).encode())
+    signing_input = f"{h_b64}.{p_b64}".encode()
+
+    der_sig = priv_key.sign(signing_input, ECDSA(crypto_hashes.SHA256()))
+    r, s    = decode_dss_signature(der_sig)
+    raw_sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+    return f"{h_b64}.{p_b64}.{_b64url(raw_sig)}"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -195,8 +278,9 @@ def start_auth_code():
 @app.route("/auth/callback")
 def auth_callback():
     """
-    Keycloak redirects here with ?code=… after the user authenticates.
-    We exchange the code for tokens (server-side, never exposed to browser).
+    Keycloak redirects here after the user authenticates.
+    Shared by Authorization Code (flow 1) and PKCE (flow 10).
+    Set session["pkce_flow"] = True before redirecting to trigger PKCE token exchange.
     """
     if err := request.args.get("error"):
         flash(f"Keycloak error: {request.args.get('error_description', err)}", "danger")
@@ -209,18 +293,25 @@ def auth_callback():
         flash("Invalid state parameter — possible CSRF attack.", "danger")
         return redirect(url_for("index"))
 
-    # Exchange authorisation code for tokens (server-to-server call)
-    resp = requests.post(
-        KC_TOKEN_URL,
-        data={
-            "grant_type":   "authorization_code",
-            "client_id":    CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-            "redirect_uri": REDIRECT_URI,
-            "code":         code,
-        },
-        timeout=10,
-    )
+    pkce_mode      = session.pop("pkce_flow",      False)
+    pkce_verifier  = session.pop("pkce_verifier",  None)
+    pkce_challenge = session.pop("pkce_challenge", None)
+    pkce_auth_url  = session.pop("pkce_auth_url",  "")
+
+    token_payload = {
+        "grant_type":   "authorization_code",
+        "redirect_uri": REDIRECT_URI,
+        "code":         code,
+    }
+    if pkce_mode and pkce_verifier:
+        token_payload["client_id"]     = PKCE_CLIENT_ID
+        token_payload["code_verifier"] = pkce_verifier
+        # public client — no client_secret
+    else:
+        token_payload["client_id"]     = CLIENT_ID
+        token_payload["client_secret"] = CLIENT_SECRET
+
+    resp = requests.post(KC_TOKEN_URL, data=token_payload, timeout=10)
 
     if not resp.ok:
         flash(f"Token exchange failed: {resp.text}", "danger")
@@ -228,9 +319,20 @@ def auth_callback():
 
     tokens = resp.json()
     tokens["expires_at"] = time.time() + tokens.get("expires_in", 300)
-    tokens["flow"]       = "authorization_code"
-    session["token_data"] = tokens
 
+    if pkce_mode:
+        tokens["flow"] = "pkce"
+        session["token_data"] = tokens
+        session["pkce_result"] = {
+            "verifier":   pkce_verifier,
+            "challenge":  pkce_challenge,
+            "auth_url":   pkce_auth_url,
+            "client_id":  PKCE_CLIENT_ID,
+        }
+        return redirect(url_for("pkce_result"))
+
+    tokens["flow"] = "authorization_code"
+    session["token_data"] = tokens
     flash("Logged in via Authorization Code flow!", "success")
     return redirect(url_for("index"))
 
@@ -444,6 +546,92 @@ def spiffe_demo():
     return render_template("spiffe_demo.html", demo=demo_data, error=error)
 
 
+# ── 8. DPoP — Proof of Possession (RFC 9449) ──────────────────────────────────
+
+@app.route("/auth/dpop")
+def dpop_demo():
+    """
+    DPoP (Demonstrating Proof of Possession) demo — RFC 9449.
+
+    Generates an ephemeral EC P-256 key pair, performs a Password Grant for alice
+    using a DPoP-bound request (so the token contains cnf.jkt), then calls the
+    DPoP-protected resource server endpoint with a second proof.
+
+    The private key is used in-place and never stored — the demo is fully self-contained
+    and does not depend on an existing session.
+    """
+    priv, pub_jwk = generate_dpop_keypair()
+    jkt = jwk_thumbprint(pub_jwk)
+
+    # DPoP proof for the token endpoint. htu must match the URL we actually POST to —
+    # Keycloak builds the expected htu from the received request URI, not from KC_HOSTNAME.
+    token_htu   = KC_TOKEN_URL
+    token_proof = make_dpop_proof(priv, pub_jwk, "POST", token_htu)
+    token_proof_info = decode_jwt(token_proof)
+
+    token_resp = requests.post(
+        KC_TOKEN_URL,
+        data={
+            "grant_type":    "password",
+            "client_id":     DPOP_CLIENT_ID,
+            "client_secret": DPOP_CLIENT_SECRET,
+            "username":      "alice",
+            "password":      "alice123",
+            "scope":         "openid profile email roles",
+        },
+        headers={"DPoP": token_proof},
+        timeout=10,
+    )
+    token_result = {
+        "status_code": token_resp.status_code,
+        "success":     token_resp.ok,
+        "data":        token_resp.json() if token_resp.content else {},
+    }
+
+    dpop_token_info   = None
+    api_proof_info    = None
+    api_result        = None
+
+    if token_resp.ok:
+        dpop_access_token = token_result["data"].get("access_token", "")
+        dpop_token_info   = decode_jwt(dpop_access_token)
+
+        api_url    = f"{RESOURCE_URL}/api/dpop-protected"
+        api_proof  = make_dpop_proof(priv, pub_jwk, "GET", api_url, access_token=dpop_access_token)
+        api_proof_info = decode_jwt(api_proof)
+
+        try:
+            api_resp = requests.get(
+                api_url,
+                headers={"Authorization": f"DPoP {dpop_access_token}", "DPoP": api_proof},
+                timeout=10,
+            )
+            api_result = {
+                "status_code": api_resp.status_code,
+                "success":     api_resp.ok,
+                "data":        api_resp.json() if api_resp.content else {},
+                "url":         api_url,
+            }
+        except requests.ConnectionError:
+            api_result = {
+                "status_code": 503, "success": False,
+                "data": {"error": "Cannot connect to resource server"}, "url": api_url,
+            }
+
+    return render_template(
+        "dpop_demo.html",
+        pub_jwk=pub_jwk,
+        jkt=jkt,
+        token_proof_info=token_proof_info,
+        token_htu=token_htu,
+        token_result=token_result,
+        dpop_token_info=dpop_token_info,
+        api_proof_info=api_proof_info,
+        api_url_display="http://localhost:8001/api/dpop-protected",
+        api_result=api_result,
+    )
+
+
 # ── 7. OIDC Identity Layer ────────────────────────────────────────────────────
 
 @app.route("/auth/oidc")
@@ -511,6 +699,235 @@ def oidc_demo():
         discovery_ok=discovery_ok,
         discovery_url=discovery_display,
         has_id_token=id_token_raw is not None,
+    )
+
+
+# ── 9. Device Authorization Grant (RFC 8628) ──────────────────────────────────
+
+@app.route("/auth/device")
+def device_flow():
+    """
+    Device Authorization Grant demo — RFC 8628.
+
+    Calls Keycloak's device authorization endpoint to obtain a device_code and
+    user_code. The template polls /auth/device/poll via JavaScript every N seconds
+    until the user approves the request at the verification_uri.
+    """
+    resp = requests.post(
+        KC_DEVICE_URL,
+        data={"client_id": DEVICE_CLIENT_ID, "scope": "openid profile email roles"},
+        auth=(DEVICE_CLIENT_ID, DEVICE_CLIENT_SECRET),
+        timeout=10,
+    )
+    device_data = resp.json() if resp.content else {}
+
+    if not resp.ok:
+        return render_template("device_demo.html",
+                               error_info={"status_code": resp.status_code, "data": device_data},
+                               device_data=None)
+
+    # Replace the internal KC hostname with the browser-accessible one so the
+    # verification_uri link works when the user clicks it.
+    for key in ("verification_uri", "verification_uri_complete"):
+        if key in device_data:
+            device_data[key] = device_data[key].replace(KC_INT, KC_EXT)
+
+    session["device_code"]    = device_data.get("device_code")
+    session["device_expires"] = time.time() + device_data.get("expires_in", 600)
+    session["device_interval"] = device_data.get("interval", 5)
+
+    return render_template("device_demo.html", device_data=device_data, error_info=None)
+
+
+@app.route("/auth/device/poll")
+def device_poll():
+    """AJAX endpoint polled by the device demo page. Returns JSON status."""
+    device_code = session.get("device_code")
+    if not device_code:
+        return jsonify({"status": "error", "error": "no_device_session",
+                        "error_description": "No active device flow. Start a new one."})
+
+    if time.time() > session.get("device_expires", 0):
+        session.pop("device_code", None)
+        return jsonify({"status": "expired", "error": "expired_token",
+                        "error_description": "The device code has expired."})
+
+    resp = requests.post(
+        KC_TOKEN_URL,
+        data={
+            "grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id":   DEVICE_CLIENT_ID,
+            "device_code": device_code,
+        },
+        auth=(DEVICE_CLIENT_ID, DEVICE_CLIENT_SECRET),
+        timeout=10,
+    )
+    result = resp.json() if resp.content else {}
+
+    if resp.ok:
+        session.pop("device_code", None)
+        access_token = result.get("access_token", "")
+        return jsonify({
+            "status":     "success",
+            "token_type": result.get("token_type"),
+            "expires_in": result.get("expires_in"),
+            "scope":      result.get("scope"),
+            "token_info": decode_jwt(access_token),
+        })
+
+    error = result.get("error", "")
+    if error == "authorization_pending":
+        return jsonify({"status": "authorization_pending"})
+    if error == "slow_down":
+        return jsonify({"status": "slow_down"})
+    session.pop("device_code", None)
+    return jsonify({"status": "error", "error": error,
+                    "error_description": result.get("error_description", "")})
+
+
+# ── 10. PKCE — Proof Key for Code Exchange (RFC 7636) ─────────────────────────
+
+@app.route("/auth/pkce")
+def pkce_flow():
+    """
+    Start a PKCE-protected Authorization Code flow — RFC 7636.
+
+    Generates an ephemeral code_verifier, derives its S256 challenge, stores both
+    in the session, then redirects to Keycloak.  The callback detects pkce_flow=True
+    and includes the verifier in the token exchange.  The result is shown on
+    /auth/pkce/result.
+    """
+    code_verifier  = _b64url(secrets.token_bytes(32))
+    code_challenge = _b64url(hashlib.sha256(code_verifier.encode()).digest())
+
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    session["oauth_state"]    = state
+    session["oauth_nonce"]    = nonce
+    session["pkce_flow"]      = True
+    session["pkce_verifier"]  = code_verifier
+    session["pkce_challenge"] = code_challenge
+
+    params = {
+        "client_id":             PKCE_CLIENT_ID,
+        "redirect_uri":          REDIRECT_URI,
+        "response_type":         "code",
+        "scope":                 "openid profile email roles",
+        "state":                 state,
+        "nonce":                 nonce,
+        "code_challenge":        code_challenge,
+        "code_challenge_method": "S256",
+    }
+    auth_url = f"{KC_AUTH_URL}?{urlencode(params)}"
+    session["pkce_auth_url"] = auth_url
+    return redirect(auth_url)
+
+
+@app.route("/auth/pkce/result")
+def pkce_result():
+    """Shows the PKCE details and resulting token after the Keycloak callback."""
+    pkce_info  = session.pop("pkce_result", None)
+    token_data = session.get("token_data")
+
+    if not pkce_info or not token_data or token_data.get("flow") != "pkce":
+        flash("No PKCE result found — start the flow from the home page.", "warning")
+        return redirect(url_for("index"))
+
+    token_info    = decode_jwt(token_data.get("access_token", ""))
+    id_token_info = decode_jwt(token_data.get("id_token", "")) if token_data.get("id_token") else None
+
+    return render_template("pkce_demo.html",
+        pkce_info=pkce_info,
+        token_data=token_data,
+        token_info=token_info,
+        id_token_info=id_token_info,
+    )
+
+
+# ── 11. Token Introspection (RFC 7662) ────────────────────────────────────────
+
+@app.route("/auth/introspect")
+def introspect_demo():
+    """
+    Token Introspection demo — RFC 7662.
+
+    Gets a fresh token pair for alice, calls the Keycloak introspection endpoint
+    (active: true), revokes the refresh token to invalidate the session, then
+    introspects again to show active: false — demonstrating that introspection
+    detects revocation in real time while local JWT decode cannot.
+    """
+    # 1. Get a fresh access + refresh token
+    token_resp = requests.post(KC_TOKEN_URL, data={
+        "grant_type":    "password",
+        "client_id":     CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "username":      "alice",
+        "password":      "alice123",
+        "scope":         "openid profile email roles",
+    }, timeout=10)
+
+    token_result = {
+        "status_code": token_resp.status_code,
+        "success":     token_resp.ok,
+        "data":        token_resp.json() if token_resp.content else {},
+    }
+
+    if not token_resp.ok:
+        return render_template("introspect_demo.html", token_result=token_result,
+                               access_token=None, local_decode=None,
+                               introspect_active=None, revoke_result=None,
+                               introspect_revoked=None)
+
+    access_token  = token_result["data"].get("access_token", "")
+    refresh_token = token_result["data"].get("refresh_token", "")
+    local_decode  = decode_jwt(access_token)
+
+    # 2. Introspect the active token
+    intr_resp = requests.post(
+        KC_INTROSPECT_URL,
+        data={"token": access_token, "token_type_hint": "access_token"},
+        auth=(CLIENT_ID, CLIENT_SECRET),
+        timeout=10,
+    )
+    introspect_active = {
+        "status_code": intr_resp.status_code,
+        "success":     intr_resp.ok,
+        "data":        intr_resp.json() if intr_resp.content else {},
+    }
+
+    # 3. Revoke the refresh token (invalidates the Keycloak session)
+    revoke_resp = requests.post(
+        KC_REVOKE_URL,
+        data={
+            "token":           refresh_token,
+            "token_type_hint": "refresh_token",
+            "client_id":       CLIENT_ID,
+            "client_secret":   CLIENT_SECRET,
+        },
+        timeout=10,
+    )
+    revoke_result = {"status_code": revoke_resp.status_code, "success": revoke_resp.ok}
+
+    # 4. Introspect again after revocation
+    intr_rev_resp = requests.post(
+        KC_INTROSPECT_URL,
+        data={"token": access_token, "token_type_hint": "access_token"},
+        auth=(CLIENT_ID, CLIENT_SECRET),
+        timeout=10,
+    )
+    introspect_revoked = {
+        "status_code": intr_rev_resp.status_code,
+        "success":     intr_rev_resp.ok,
+        "data":        intr_rev_resp.json() if intr_rev_resp.content else {},
+    }
+
+    return render_template("introspect_demo.html",
+        token_result=token_result,
+        access_token=access_token,
+        local_decode=local_decode,
+        introspect_active=introspect_active,
+        revoke_result=revoke_result,
+        introspect_revoked=introspect_revoked,
     )
 
 
