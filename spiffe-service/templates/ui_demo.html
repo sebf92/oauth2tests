@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+{% block title %}SPIFFE Service — Demo Runner{% endblock %}
+{% block nav_demo %}active{% endblock %}
+
+{% block content %}
+
+{# ── Hero ──────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-info">
+  <div class="d-flex align-items-center gap-3 flex-wrap">
+    <i class="bi bi-play-circle-fill text-info" style="font-size:2rem;flex-shrink:0"></i>
+    <div class="flex-grow-1">
+      <h1 class="h4 fw-bold mb-1">Interactive Demo Runner</h1>
+      <p class="text-muted mb-0 small">
+        Runs the full SPIFFE → OAuth2 → Resource Server pipeline live.
+        Each step is executed in real time and the raw JWT claims are shown inline.
+      </p>
+    </div>
+    <button id="run-btn" class="btn btn-info text-white" onclick="runDemo()">
+      <i class="bi bi-play-fill me-2"></i>Run Demo
+    </button>
+  </div>
+</div>
+
+{# ── Steps skeleton (shown before run) ──────────────────────────────────────── #}
+<div id="steps-container">
+
+  <div class="row g-3 mb-3">
+    {# Step 1 #}
+    <div class="col-12">
+      <div class="card border-0 shadow-sm step-card" id="card-step1">
+        <div class="card-header d-flex align-items-center gap-3 bg-white border-bottom">
+          <span class="badge bg-secondary rounded-pill px-3 py-2">Step 1</span>
+          <span class="fw-semibold"><i class="bi bi-shield-check text-warning me-2"></i>SPIRE Workload API — Container Attestation</span>
+          <span id="status-step1" class="ms-auto"></span>
+        </div>
+        <div class="card-body" id="body-step1">
+          <p class="text-muted small mb-0">
+            The SPIRE agent verifies this container's OS identity (unix UID selector),
+            checks it against a registered workload entry on the SPIRE server,
+            and issues a short-lived JWT-SVID signed by SPIRE's JWT authority.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    {# Step 2 #}
+    <div class="col-12">
+      <div class="card border-0 shadow-sm step-card" id="card-step2">
+        <div class="card-header d-flex align-items-center gap-3 bg-white border-bottom">
+          <span class="badge bg-secondary rounded-pill px-3 py-2">Step 2</span>
+          <span class="fw-semibold"><i class="bi bi-fingerprint text-info me-2"></i>SPIFFE Identity</span>
+          <span id="status-step2" class="ms-auto"></span>
+        </div>
+        <div class="card-body" id="body-step2">
+          <p class="text-muted small mb-0">
+            Claims extracted from the SPIRE-issued JWT-SVID. No secret was stored or
+            transmitted — SPIRE verified this container's OS identity before issuing the token.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    {# Step 3 #}
+    <div class="col-12">
+      <div class="card border-0 shadow-sm step-card" id="card-step3">
+        <div class="card-header d-flex align-items-center gap-3 bg-white border-bottom">
+          <span class="badge bg-secondary rounded-pill px-3 py-2">Step 3</span>
+          <span class="fw-semibold"><i class="bi bi-person-check text-success me-2"></i>RFC 7523 Private Key JWT — Keycloak Authentication</span>
+          <span id="status-step3" class="ms-auto"></span>
+        </div>
+        <div class="card-body" id="body-step3">
+          <p class="text-muted small mb-0">
+            The service authenticates to Keycloak using a signed
+            <code>client_assertion</code> JWT (ES256, no client_secret).
+            Keycloak fetches <a href="/jwks" target="_blank">/jwks</a> to verify the signature,
+            then returns an OAuth2 access token.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    {# Step 4 #}
+    <div class="col-12">
+      <div class="card border-0 shadow-sm step-card" id="card-step4">
+        <div class="card-header d-flex align-items-center gap-3 bg-white border-bottom">
+          <span class="badge bg-secondary rounded-pill px-3 py-2">Step 4</span>
+          <span class="fw-semibold"><i class="bi bi-server text-danger me-2"></i>Resource Server API Call</span>
+          <span id="status-step4" class="ms-auto"></span>
+        </div>
+        <div class="card-body" id="body-step4">
+          <p class="text-muted small mb-0">
+            The OAuth2 access token (obtained via SPIFFE workload identity) is used as
+            a Bearer token to call the protected resource server API.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+{# ── Result summary (populated after run) ───────────────────────────────────── #}
+<div id="result-summary" class="d-none mt-2 mb-4">
+  <div class="alert d-flex align-items-center gap-2 mb-0" id="summary-alert">
+    <i class="bi" id="summary-icon" style="font-size:1.3rem"></i>
+    <span id="summary-text"></span>
+    <button class="btn btn-sm btn-outline-secondary ms-auto" onclick="runDemo()">
+      <i class="bi bi-arrow-clockwise me-1"></i>Run Again
+    </button>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STEP_KEYS = ["step_1_workload_api", "step_2_identity_summary", "step_3_keycloak_auth", "step_4_resource_server"];
+const STEP_IDS  = ["step1", "step2", "step3", "step4"];
+
+function fmt(obj) {
+  if (obj === null || obj === undefined) return '<span class="text-muted">—</span>';
+  if (typeof obj === "object") return JSON.stringify(obj, null, 2);
+  return String(obj);
+}
+
+function claimsTable(claims) {
+  if (!claims || typeof claims !== "object" || !Object.keys(claims).length) return "";
+  const rows = Object.entries(claims)
+    .map(([k, v]) => `<tr>
+      <td class="ps-3 py-1"><code class="claim-key">${escHtml(k)}</code></td>
+      <td class="pe-3 py-1"><code class="claim-value">${escHtml(typeof v === "object" ? JSON.stringify(v) : String(v))}</code></td>
+    </tr>`)
+    .join("");
+  return `<table class="table table-sm mb-0" style="font-size:.8rem">${rows}</table>`;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function setStatus(id, success, errorMsg) {
+  const el = document.getElementById("status-" + id);
+  const card = document.getElementById("card-" + id);
+  if (success) {
+    el.innerHTML = '<span class="badge bg-success"><i class="bi bi-check-lg me-1"></i>OK</span>';
+    card.classList.remove("border-danger");
+    card.classList.add("border-success", "border-1");
+  } else {
+    el.innerHTML = '<span class="badge bg-danger"><i class="bi bi-x-lg me-1"></i>Failed</span>';
+    card.classList.remove("border-success");
+    card.classList.add("border-danger", "border-1");
+  }
+}
+
+function renderStep1(data) {
+  const ok = data.success;
+  setStatus("step1", ok, data.error);
+  const inner = ok ? `
+    <div class="row g-3 mt-1">
+      <div class="col-md-6">
+        <div class="fw-semibold small mb-1 text-muted">SPIFFE ID</div>
+        <div class="code-box py-2 px-3" style="font-size:.82rem">${escHtml(data.spiffe_id || "—")}</div>
+      </div>
+      <div class="col-md-6">
+        <div class="fw-semibold small mb-1 text-muted">JWT Header</div>
+        <div class="code-box py-2 px-3" style="font-size:.75rem">${escHtml(JSON.stringify(data.jwt_header || {}, null, 2))}</div>
+      </div>
+      <div class="col-12">
+        <div class="fw-semibold small mb-1 text-muted">JWT Payload (SVID Claims)</div>
+        <div class="code-box rounded-3">${claimsTable(data.jwt_payload)}</div>
+      </div>
+    </div>` : `<div class="alert alert-danger mt-2 mb-0"><i class="bi bi-exclamation-triangle me-2"></i>${escHtml(data.error || "Unknown error")}</div>`;
+  document.getElementById("body-step1").innerHTML = inner;
+}
+
+function renderStep2(data) {
+  const ok = data.success;
+  setStatus("step2", ok);
+  const inner = `
+    <div class="row g-3 mt-1">
+      <div class="col-md-4">
+        <div class="fw-semibold small mb-1 text-muted">SPIFFE ID</div>
+        <div class="code-box py-2 px-3" style="font-size:.8rem;word-break:break-all">${escHtml(data.spiffe_id || "—")}</div>
+      </div>
+      <div class="col-md-4">
+        <div class="fw-semibold small mb-1 text-muted">Issued At</div>
+        <div class="code-box py-2 px-3" style="font-size:.8rem">${escHtml(data.issued_at || "—")}</div>
+      </div>
+      <div class="col-md-4">
+        <div class="fw-semibold small mb-1 text-muted">Expires At</div>
+        <div class="code-box py-2 px-3" style="font-size:.8rem">${escHtml(data.expires_at || "—")}</div>
+      </div>
+      <div class="col-12">
+        <div class="alert alert-info py-2 mb-0 small">
+          <i class="bi bi-info-circle me-1"></i>${escHtml(data.note || "")}
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("body-step2").innerHTML = inner;
+}
+
+function renderStep3(data) {
+  const ok = data.success;
+  setStatus("step3", ok, data.error);
+  const inner = ok ? `
+    <div class="row g-3 mt-1">
+      <div class="col-md-4">
+        <div class="fw-semibold small mb-1 text-muted">Auth Method</div>
+        <div class="code-box py-2 px-3" style="font-size:.78rem">${escHtml(data.auth_method || "—")}</div>
+      </div>
+      <div class="col-md-4">
+        <div class="fw-semibold small mb-1 text-muted">Client ID</div>
+        <div class="code-box py-2 px-3" style="font-size:.82rem">${escHtml(data.client_id || "—")}</div>
+      </div>
+      <div class="col-md-4">
+        <div class="fw-semibold small mb-1 text-muted">Token Expires In</div>
+        <div class="code-box py-2 px-3" style="font-size:.82rem">${escHtml(data.expires_in ? data.expires_in + "s" : "—")}</div>
+      </div>
+      <div class="col-12">
+        <div class="fw-semibold small mb-1 text-muted">Access Token Claims</div>
+        <div class="code-box rounded-3">${claimsTable(data.access_token_claims)}</div>
+      </div>
+    </div>` : `<div class="alert alert-danger mt-2 mb-0"><i class="bi bi-exclamation-triangle me-2"></i>${escHtml(data.error || "Unknown error")}</div>`;
+  document.getElementById("body-step3").innerHTML = inner;
+}
+
+function renderStep4(data) {
+  const ok = data.success;
+  setStatus("step4", ok);
+  const statusClass = ok ? "success" : "danger";
+  const inner = `
+    <div class="row g-3 mt-1">
+      <div class="col-md-6">
+        <div class="fw-semibold small mb-1 text-muted">URL</div>
+        <div class="code-box py-2 px-3" style="font-size:.8rem;word-break:break-all">${escHtml(data.url || "—")}</div>
+      </div>
+      <div class="col-md-6">
+        <div class="fw-semibold small mb-1 text-muted">HTTP Status</div>
+        <div class="code-box py-2 px-3">
+          <span class="badge bg-${statusClass} fs-6">${escHtml(String(data.status_code || "—"))}</span>
+        </div>
+      </div>
+      <div class="col-12">
+        <div class="fw-semibold small mb-1 text-muted">Response Data</div>
+        <pre class="code-box mb-0" style="font-size:.78rem;max-height:260px;overflow-y:auto">${escHtml(JSON.stringify(data.data || {}, null, 2))}</pre>
+      </div>
+    </div>`;
+  document.getElementById("body-step4").innerHTML = inner;
+}
+
+async function runDemo() {
+  const btn = document.getElementById("run-btn");
+  const summary = document.getElementById("result-summary");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Running…';
+  summary.classList.add("d-none");
+
+  // reset step cards
+  STEP_IDS.forEach(id => {
+    document.getElementById("status-" + id).innerHTML = '<span class="spinner-border spinner-border-sm text-info"></span>';
+    document.getElementById("card-" + id).classList.remove("border-success","border-danger","border-1");
+  });
+
+  try {
+    const resp = await fetch("/demo");
+    const data = await resp.json();
+    const steps = data.steps || {};
+
+    if (steps.step_1_workload_api) renderStep1(steps.step_1_workload_api);
+    if (steps.step_2_identity_summary) renderStep2(steps.step_2_identity_summary);
+    if (steps.step_3_keycloak_auth) renderStep3(steps.step_3_keycloak_auth);
+    if (steps.step_4_resource_server) renderStep4(steps.step_4_resource_server);
+
+    // Overall summary
+    const overall = data.overall_success;
+    summary.classList.remove("d-none");
+    const alert = document.getElementById("summary-alert");
+    const icon  = document.getElementById("summary-icon");
+    const text  = document.getElementById("summary-text");
+    alert.className = `alert d-flex align-items-center gap-2 mb-0 alert-${overall ? "success" : "warning"}`;
+    icon.className  = `bi ${overall ? "bi-check-circle-fill text-success" : "bi-exclamation-triangle-fill text-warning"}`;
+    text.textContent = overall
+      ? `Demo completed successfully — SPIFFE identity ${data.spiffe_id} authenticated and called the resource API.`
+      : "Demo did not complete fully — check the failed steps above for details.";
+
+  } catch (err) {
+    summary.classList.remove("d-none");
+    document.getElementById("summary-alert").className = "alert d-flex align-items-center gap-2 mb-0 alert-danger";
+    document.getElementById("summary-icon").className  = "bi bi-x-circle-fill text-danger";
+    document.getElementById("summary-text").textContent = "Request failed: " + err.message;
+    STEP_IDS.forEach(id => document.getElementById("status-" + id).innerHTML = "");
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-play-fill me-2"></i>Run Demo';
+}
+</script>
+{% endblock %}

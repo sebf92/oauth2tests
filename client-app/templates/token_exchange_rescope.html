@@ -90,20 +90,10 @@
         {% if exchange_result.status_code == 400 %}
         <div class="alert alert-warning small">
           <i class="bi bi-info-circle-fill me-1"></i>
-          <strong>Keycloak returned 400.</strong> Common causes:
-          <ul class="mb-0 mt-1">
-            <li><code>KC_FEATURES=preview</code> is set but Keycloak has not been restarted — run
-                <code>docker compose restart keycloak</code></li>
-            <li>Self-exchange (<code>demo-client</code> exchanging its own token) requires that
-                fine-grained permissions be enabled for the client in the Admin Console</li>
-          </ul>
-        </div>
-        {% elif exchange_result.status_code == 501 %}
-        <div class="alert alert-warning small">
-          <i class="bi bi-info-circle-fill me-1"></i>
-          <strong>Token exchange is not enabled.</strong>
-          Make sure <code>KC_FEATURES=preview</code> (or <code>KC_FEATURES=token-exchange</code>)
-          is set in <code>docker-compose.yml</code> and Keycloak has been restarted.
+          <strong>Keycloak returned 400.</strong> Standard Token Exchange is GA in KC 26.2+ —
+          no feature flags required. Check that <code>standard.token.exchange.enabled = true</code>
+          is set on <code>middle-tier-client</code>, or re-run
+          <code>docker compose run --rm keycloak-init</code>.
         </div>
         {% endif %}
 
@@ -238,7 +228,7 @@
       <li>The <code>scope</code> claim in the new token reflects the narrower set; <code>realm_access.roles</code> is absent.</li>
       <li>The token is still cryptographically valid — the resource server trusts it, but role checks will return 403.</li>
       <li>This only works when <code>roles</code> is an <em>optional</em> scope in the client (not default); see <code>realm-export.json</code>.</li>
-      <li>Requires <code>KC_FEATURES=preview</code> and Keycloak token-exchange permissions configured in the Admin Console.</li>
+      <li>Standard Token Exchange is GA in Keycloak 26.2+ — no feature flags or Admin Console policy setup required. The <code>standard.token.exchange.enabled</code> client attribute is all that is needed.</li>
     </ul>
   </div>
 </div>

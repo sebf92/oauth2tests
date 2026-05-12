@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}SPIFFE Service — Home{% endblock %}
+{% block nav_home %}active{% endblock %}
+
+{% block content %}
+
+{# ── Hero ──────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-info">
+  <div class="d-flex align-items-center gap-3 flex-wrap">
+    <i class="bi bi-fingerprint text-info" style="font-size:2.5rem;flex-shrink:0"></i>
+    <div class="flex-grow-1">
+      <h1 class="h4 fw-bold mb-1">SPIFFE Service Demo</h1>
+      <p class="text-muted mb-0">
+        Workload identity with SPIRE &amp; Keycloak 26.4+ native
+        <strong>RFC 7523 <code>private_key_jwt</code></strong> — no client secret anywhere.
+      </p>
+    </div>
+    <a href="/ui/demo" class="btn btn-info text-white">
+      <i class="bi bi-play-circle-fill me-2"></i>Run Demo
+    </a>
+  </div>
+</div>
+
+{# ── Config grid ───────────────────────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+
+  <div class="col-md-6 col-xl-3">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <i class="bi bi-globe text-info" style="font-size:1.3rem"></i>
+          <span class="fw-semibold small text-uppercase text-muted" style="letter-spacing:.05em">Trust Domain</span>
+        </div>
+        <div class="code-box py-2 px-3" style="font-size:.85rem">{{ trust_domain }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-6 col-xl-3">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <i class="bi bi-fingerprint text-info" style="font-size:1.3rem"></i>
+          <span class="fw-semibold small text-uppercase text-muted" style="letter-spacing:.05em">SPIFFE ID</span>
+        </div>
+        <div class="code-box py-2 px-3" style="font-size:.8rem;word-break:break-all">{{ spiffe_id }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-6 col-xl-3">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <i class="bi bi-shield-lock text-success" style="font-size:1.3rem"></i>
+          <span class="fw-semibold small text-uppercase text-muted" style="letter-spacing:.05em">Auth Method</span>
+        </div>
+        <div class="code-box py-2 px-3" style="font-size:.8rem">
+          private_key_jwt<br>
+          <span class="text-success">ES256 (P-256)</span><br>
+          <span class="text-muted" style="font-size:.72rem">no client_secret</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-6 col-xl-3">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <i class="bi bi-key text-warning" style="font-size:1.3rem"></i>
+          <span class="fw-semibold small text-uppercase text-muted" style="letter-spacing:.05em">Key ID (kid)</span>
+        </div>
+        <div class="code-box py-2 px-3" style="font-size:.85rem">{{ key_id }}</div>
+        <p class="text-muted mt-2 mb-0" style="font-size:.75rem">
+          Ephemeral EC P-256 key — generated at startup, never persisted.
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+{# ── Auth flow diagram ──────────────────────────────────────────────────────── #}
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-header bg-white fw-semibold border-bottom">
+    <i class="bi bi-diagram-3-fill text-info me-2"></i>Authentication Flow
+  </div>
+  <div class="card-body p-4">
+    <div class="d-flex flex-wrap align-items-center gap-2 justify-content-center">
+
+      <div class="text-center p-3 rounded-3" style="background:#f0f9ff;min-width:120px">
+        <i class="bi bi-cpu text-info" style="font-size:1.6rem"></i>
+        <div class="small fw-semibold mt-1">Container</div>
+        <div class="text-muted" style="font-size:.7rem">UID attestation</div>
+      </div>
+      <i class="bi bi-arrow-right text-muted" style="font-size:1.2rem"></i>
+
+      <div class="text-center p-3 rounded-3" style="background:#fff3e0;min-width:120px">
+        <i class="bi bi-shield-check text-warning" style="font-size:1.6rem"></i>
+        <div class="small fw-semibold mt-1">SPIRE Agent</div>
+        <div class="text-muted" style="font-size:.7rem">issues JWT-SVID</div>
+      </div>
+      <i class="bi bi-arrow-right text-muted" style="font-size:1.2rem"></i>
+
+      <div class="text-center p-3 rounded-3" style="background:#f0f4ff;min-width:130px">
+        <i class="bi bi-file-earmark-lock text-primary" style="font-size:1.6rem"></i>
+        <div class="small fw-semibold mt-1">client_assertion</div>
+        <div class="text-muted" style="font-size:.7rem">RFC 7523 ES256</div>
+      </div>
+      <i class="bi bi-arrow-right text-muted" style="font-size:1.2rem"></i>
+
+      <div class="text-center p-3 rounded-3" style="background:#f0fff4;min-width:120px">
+        <i class="bi bi-person-check text-success" style="font-size:1.6rem"></i>
+        <div class="small fw-semibold mt-1">Keycloak</div>
+        <div class="text-muted" style="font-size:.7rem">fetches /jwks → token</div>
+      </div>
+      <i class="bi bi-arrow-right text-muted" style="font-size:1.2rem"></i>
+
+      <div class="text-center p-3 rounded-3" style="background:#fff0f6;min-width:120px">
+        <i class="bi bi-server text-danger" style="font-size:1.6rem"></i>
+        <div class="small fw-semibold mt-1">Resource API</div>
+        <div class="text-muted" style="font-size:.7rem">Bearer token</div>
+      </div>
+
+    </div>
+    <p class="text-muted text-center mt-3 mb-0 small">
+      <i class="bi bi-info-circle me-1"></i>
+      No client secret is stored anywhere. Keycloak validates the
+      <code>client_assertion</code> by fetching <a href="/jwks" target="_blank">/jwks</a>
+      and verifying the ES256 signature against the runtime-generated EC key.
+    </p>
+  </div>
+</div>
+
+{# ── Endpoints reference ────────────────────────────────────────────────────── #}
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-header bg-white fw-semibold border-bottom">
+        <i class="bi bi-list-ul text-secondary me-2"></i>Endpoints
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-hover mb-0" style="font-size:.875rem">
+          <thead class="table-light">
+            <tr>
+              <th class="ps-4">Method + Path</th>
+              <th>Returns</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="ps-4"><span class="badge bg-success me-1">GET</span><code>/ui</code></td>
+              <td><span class="badge bg-secondary">HTML</span></td>
+              <td>This page — service info &amp; config</td>
+            </tr>
+            <tr>
+              <td class="ps-4"><span class="badge bg-success me-1">GET</span><code>/ui/demo</code></td>
+              <td><span class="badge bg-secondary">HTML</span></td>
+              <td>Interactive demo runner</td>
+            </tr>
+            <tr>
+              <td class="ps-4"><span class="badge bg-success me-1">GET</span><code>/</code></td>
+              <td><span class="badge bg-warning text-dark">JSON</span></td>
+              <td>Service info (API)</td>
+            </tr>
+            <tr>
+              <td class="ps-4"><span class="badge bg-success me-1">GET</span><code>/health</code></td>
+              <td><span class="badge bg-warning text-dark">JSON</span></td>
+              <td>Health check</td>
+            </tr>
+            <tr>
+              <td class="ps-4"><span class="badge bg-success me-1">GET</span><code>/jwks</code></td>
+              <td><span class="badge bg-warning text-dark">JSON</span></td>
+              <td>Public JWKS for Keycloak client_assertion validation</td>
+            </tr>
+            <tr>
+              <td class="ps-4"><span class="badge bg-success me-1">GET</span><code>/svid</code></td>
+              <td><span class="badge bg-warning text-dark">JSON</span></td>
+              <td>Raw JWT-SVID claims from SPIRE (inspection)</td>
+            </tr>
+            <tr>
+              <td class="ps-4"><span class="badge bg-success me-1">GET</span><code>/demo</code></td>
+              <td><span class="badge bg-warning text-dark">JSON</span></td>
+              <td>Full 4-step demo (machine-readable)</td>
+            </tr>
+            <tr>
+              <td class="ps-4"><span class="badge bg-success me-1">GET</span><code>/docs</code></td>
+              <td><span class="badge bg-secondary">HTML</span></td>
+              <td>FastAPI / Swagger UI</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-header bg-white fw-semibold border-bottom">
+        <i class="bi bi-link-45deg text-secondary me-2"></i>Quick Links
+      </div>
+      <div class="card-body">
+        <ul class="list-unstyled mb-0">
+          <li class="mb-2">
+            <a href="/ui/demo" class="btn btn-info btn-sm w-100 text-white">
+              <i class="bi bi-play-circle-fill me-2"></i>Run SPIFFE → OAuth2 Demo
+            </a>
+          </li>
+          <li class="mb-2">
+            <a href="/jwks" target="_blank" class="btn btn-outline-secondary btn-sm w-100">
+              <i class="bi bi-key me-2"></i>View JWKS
+              <i class="bi bi-box-arrow-up-right ms-1" style="font-size:.65rem"></i>
+            </a>
+          </li>
+          <li class="mb-2">
+            <a href="/svid" target="_blank" class="btn btn-outline-secondary btn-sm w-100">
+              <i class="bi bi-shield-check me-2"></i>Inspect JWT-SVID
+              <i class="bi bi-box-arrow-up-right ms-1" style="font-size:.65rem"></i>
+            </a>
+          </li>
+          <li class="mb-2">
+            <a href="/docs" target="_blank" class="btn btn-outline-secondary btn-sm w-100">
+              <i class="bi bi-book me-2"></i>FastAPI / Swagger UI
+              <i class="bi bi-box-arrow-up-right ms-1" style="font-size:.65rem"></i>
+            </a>
+          </li>
+          <li>
+            <a href="http://localhost:5000/docs/spiffe-oauth2" target="_blank"
+               class="btn btn-outline-primary btn-sm w-100">
+              <i class="bi bi-file-earmark-text me-2"></i>SPIFFE + OAuth2 Guide
+              <i class="bi bi-box-arrow-up-right ms-1" style="font-size:.65rem"></i>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

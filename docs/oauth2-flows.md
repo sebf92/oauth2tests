@@ -23,7 +23,7 @@ This demo implements **eleven flows** across four categories:
 | 3 | Client Credentials | RFC 6749 §4.4 |
 | 4 | On-Behalf-Of (Token Exchange) | RFC 8693 |
 | 5 | Token Rescoping (Token Exchange) | RFC 8693 |
-| 6 | SPIFFE Workload Identity → OAuth2 Bridge | SPIFFE / RFC 7523 |
+| 6 | SPIFFE Workload Identity (RFC 7523 private_key_jwt) | SPIFFE / RFC 7523 |
 | 7 | OIDC Identity Layer | OpenID Connect Core |
 | 8 | DPoP — Proof of Possession | RFC 9449 |
 | 9 | Device Authorization Grant | RFC 8628 |
@@ -223,9 +223,10 @@ preserving the user's identity in the delegated token while the acting client ch
 
 ### Prerequisites
 
-- `KC_FEATURES=preview` enabled on the Keycloak service (already in `docker-compose.yml`)
-- Fine-grained permissions enabled on `demo-client` (done by `keycloak-init` at startup)
-- `middle-tier-client` in the `aud` claim of the subject token (configured via audience mapper)
+- `standard.token.exchange.enabled = true` set on `middle-tier-client` (done by `keycloak-init`
+  at startup via the Admin REST API — KC 26.2+ GA, no feature flags required)
+- `middle-tier-client` in the `aud` claim of the subject token (configured via audience mapper
+  in `realm-export.json`)
 
 ### Flow
 
@@ -417,8 +418,9 @@ For resource server calls, the proof additionally includes:
 
 ### Keycloak requirement
 
-DPoP binding on Password Grant (and all grant types) requires **Keycloak 26.0+**. Earlier
-versions silently ignored the `DPoP` header and issued a plain Bearer token.
+DPoP binding on Password Grant (and all grant types) requires **Keycloak 26.4+** (GA; no
+feature flags needed). Earlier versions silently ignored the `DPoP` header and issued a
+plain Bearer token.
 
 ---
 

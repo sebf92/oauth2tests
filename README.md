@@ -30,7 +30,7 @@ Browser / curl
        │ token exchange / API calls             │                                          │
        ▼                                        │ • Issues JWT access tokens (RS256)       │
 ┌──────────────────────────────────────┐        │ • Manages users, roles, clients          │
-│   Keycloak :8080   (realm: demo)     │        │ • RFC 8693 token exchange (preview)      │
+│   Keycloak :8080   (realm: demo)     │        │ • RFC 8693 token exchange (GA, KC 26.2+) │
 │   PostgreSQL :5432 (persistence)     │        │ • DPoP enforcement (RFC 9449)            │
 └──────────────────────────────────────┘        │ • Device Authorization Grant (RFC 8628)  │
                                                 │ • PKCE enforcement (RFC 7636)            │
@@ -80,7 +80,8 @@ docker compose ps
 |---|---|
 | **Client App** (Flask) | http://localhost:5000 |
 | **Resource Server** (FastAPI docs) | http://localhost:8001/docs |
-| **SPIFFE Service** (FastAPI) | http://localhost:8002 |
+| **SPIFFE Service** — HTML UI | http://localhost:8002/ui |
+| **SPIFFE Service** — API / Swagger | http://localhost:8002/docs |
 | **Keycloak Admin Console** | http://localhost:8080/admin (`admin` / `admin`) |
 
 ### 3 — Try the flows
@@ -113,7 +114,7 @@ docker compose ps
 |---|---|---|---|
 | `service-client` | `service-client-secret` | `user-role` | Client Credentials flow |
 | `middle-tier-client` | `middle-tier-client-secret` | — | On-Behalf-Of exchange |
-| `spiffe-service` | `spiffe-service-secret` | `user-role` | SPIFFE→OAuth2 bridge |
+| `spiffe-service` | _(none — private_key_jwt)_ | `user-role` | RFC 7523 private_key_jwt workload identity |
 | `dpop-client` | `dpop-client-secret` | — | DPoP bound tokens (Password Grant) |
 | `device-client` | `device-client-secret` | — | Device Authorization Grant |
 | `pkce-client` | _(none — public client)_ | — | PKCE Authorization Code |
@@ -156,8 +157,9 @@ User token + middle-tier-client credentials → POST /token → delegated token
 ```
 
 `middle-tier-client` exchanges Alice's token for a new token scoped to itself, preserving
-the user's identity (`sub`) while switching the acting client (`azp`). Requires the
-`KC_FEATURES=preview` flag and fine-grained authorization policies on `demo-client`.
+the user's identity (`sub`) while switching the acting client (`azp`). Standard Token Exchange
+is GA in Keycloak 26.2+ — the `standard.token.exchange.enabled` attribute on `middle-tier-client`
+is all that is needed; no feature flags or fine-grained permission policies required.
 
 ### 5. Token Rescoping (RFC 8693)
 
@@ -171,12 +173,14 @@ the original, allowing middle-tier services to enforce least privilege on delega
 ### 6. SPIFFE Workload Identity
 
 ```
-SPIRE attests container → JWT-SVID → OAuth2 bridge → access_token
+SPIRE attests container → JWT-SVID → RFC 7523 private_key_jwt → access_token
 ```
 
 `spiffe-service` proves its identity to the SPIRE agent using OS-level attributes (unix UID),
-receives a short-lived JWT-SVID (~5 min), maps it to a Keycloak service account, and uses
-the resulting OAuth2 token to call the resource server — no static secret ever stored.
+receives a short-lived JWT-SVID (~5 min), then authenticates to Keycloak via
+**RFC 7523 `private_key_jwt`**: it signs a client assertion with an ephemeral EC key and
+presents it to the token endpoint — no `client_secret` stored or transmitted anywhere.
+Keycloak validates the assertion by fetching the service's own `GET /jwks` endpoint.
 See [docs/spiffe-oauth2.md](docs/spiffe-oauth2.md) for details.
 
 ### 7. OIDC Identity Layer
@@ -197,7 +201,8 @@ Ephemeral EC key → DPoP proof header → token with cnf.jkt → proof-bound AP
 
 Generates an ephemeral P-256 key pair, binds it to the access token (`cnf.jkt` = JWK
 Thumbprint), then calls the resource server with a second per-request DPoP proof. Even if
-the token is stolen, it cannot be replayed without the private key. Requires Keycloak 26.0+.
+the token is stolen, it cannot be replayed without the private key. Requires Keycloak 26.4+
+(DPoP is GA; no feature flags needed).
 
 ### 9. Device Authorization Grant (RFC 8628)
 
@@ -258,14 +263,15 @@ The realm is auto-imported from [`keycloak/realm-export.json`](keycloak/realm-ex
 on first boot. Post-import configuration (token-exchange permissions, client provisioning) is
 handled by the `keycloak-init` container on every startup.
 
-Keycloak version: **26.0** (`quay.io/keycloak/keycloak:26.0`)
+Keycloak version: **26.6.1** (`quay.io/keycloak/keycloak:26.6.1`)
 
 | Setting | Value |
 |---|---|
 | Realm | `demo` |
 | Token lifetime | 30 minutes |
 | Signature algorithm | RS256 |
-| Preview features | Enabled (`KC_FEATURES=preview`) — required for RFC 8693 token exchange |
+| Token Exchange | GA (KC 26.2+) — `standard.token.exchange.enabled = true` on `middle-tier-client` |
+| DPoP | GA (KC 26.4+) — `dpop.bound.access.tokens = true` on `dpop-client` |
 
 ### Clients
 
@@ -274,7 +280,7 @@ Keycloak version: **26.0** (`quay.io/keycloak/keycloak:26.0`)
 | `demo-client` | Auth Code + Password | Browser login and ROPC testing; confidential |
 | `service-client` | Client Credentials | Machine-to-machine demo; confidential |
 | `middle-tier-client` | Client Credentials | OBO / rescoping actor; confidential |
-| `spiffe-service` | Client Credentials | SPIFFE→OAuth2 bridge service account; confidential |
+| `spiffe-service` | Client Credentials | RFC 7523 private_key_jwt workload identity; **no secret** |
 | `dpop-client` | Password Grant (DPoP) | `dpop.bound.access.tokens: true`; confidential |
 | `device-client` | Device Authorization Grant | `oauth2.device.authorization.grant.enabled: true`; confidential |
 | `pkce-client` | Authorization Code + PKCE | `pkce.code.challenge.method: S256`; **public** (no secret) |
@@ -325,7 +331,10 @@ curl -s -X POST http://localhost:8080/realms/demo/protocol/openid-connect/token/
 # Decode token locally (without verification)
 echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 
-# SPIFFE service demo endpoint
+# SPIFFE service — HTML UI (open in browser)
+# http://localhost:8002/ui
+
+# SPIFFE service demo endpoint (JSON)
 curl http://localhost:8002/demo | jq .overall_success
 ```
 
@@ -380,13 +389,14 @@ To re-run it: `docker compose up keycloak-init`.
 
 ### DPoP demo shows "DPoP proof is missing" or no `cnf.jkt`
 
-This requires **Keycloak 26.0+**. Check the image in `docker-compose.yml`:
+This requires **Keycloak 26.4+** (DPoP is GA; no feature flags needed). Check the image
+in `docker-compose.yml`:
 
 ```bash
 docker compose images keycloak
 ```
 
-Keycloak 24.x silently ignores the DPoP header on Password Grant — upgrade to 26.0.
+Keycloak 24.x silently ignores the DPoP header on Password Grant — upgrade to 26.4+.
 
 ### Device Authorization Grant — poll returns "expired"
 

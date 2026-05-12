@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Documentation — OAuth2 + JWT Demo{% endblock %}
+
+{% block content %}
+
+{# ── Hero ─────────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-primary">
+  <div class="d-flex align-items-center gap-3">
+    <i class="bi bi-book-half text-primary" style="font-size:2rem"></i>
+    <div>
+      <h1 class="h4 fw-bold mb-1">Technical Documentation</h1>
+      <p class="text-muted mb-0">
+        Deep-dive reference for every layer of this demo — architecture, OAuth2 flows,
+        SPIFFE workload identity, and Keycloak configuration guides.
+      </p>
+    </div>
+  </div>
+</div>
+
+{# ── Doc cards ────────────────────────────────────────────────────────────────── #}
+<div class="row g-4">
+
+  {% for doc in docs %}
+  {% set border_colors = {
+    'primary': '#0d6efd',
+    'success':  '#198754',
+    'info':     '#0dcaf0',
+    'warning':  '#ffc107'
+  } %}
+  {% set icon_colors = {
+    'primary': 'text-primary',
+    'success':  'text-success',
+    'info':     'text-info',
+    'warning':  'text-warning'
+  } %}
+  <div class="col-md-6 col-xl-3">
+    <a href="{{ url_for('docs_page', slug=doc.slug) }}" class="text-decoration-none">
+      <div class="card h-100 shadow-sm docs-card border-0"
+           style="border-top: 4px solid {{ border_colors[doc.color] }} !important; border-top-style: solid !important;">
+        <div class="card-body d-flex flex-column p-4">
+          <div class="mb-3">
+            <i class="bi {{ doc.icon }} {{ icon_colors[doc.color] }}" style="font-size:2rem"></i>
+          </div>
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <h5 class="fw-bold mb-0 text-dark">{{ doc.title }}</h5>
+          </div>
+          <span class="badge bg-{{ doc.color }} {{ 'text-dark' if doc.color in ('info','warning') else '' }} mb-3 align-self-start">
+            {{ doc.badge }}
+          </span>
+          <p class="card-text text-muted small flex-grow-1">{{ doc.description }}</p>
+          <div class="d-flex align-items-center mt-3 text-{{ doc.color }} fw-semibold small">
+            Read documentation <i class="bi bi-arrow-right ms-1"></i>
+          </div>
+        </div>
+      </div>
+    </a>
+  </div>
+  {% endfor %}
+
+</div>
+
+{# ── Quick links ──────────────────────────────────────────────────────────────── #}
+<div class="row g-3 mt-2">
+  <div class="col-md-4">
+    <div class="card border-0 bg-white shadow-sm h-100">
+      <div class="card-body">
+        <h6 class="fw-semibold mb-3"><i class="bi bi-link-45deg text-secondary me-1"></i>External References</h6>
+        <ul class="list-unstyled small mb-0">
+          <li class="mb-1"><a href="https://datatracker.ietf.org/doc/html/rfc6749" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>RFC 6749 — OAuth 2.0</a></li>
+          <li class="mb-1"><a href="https://datatracker.ietf.org/doc/html/rfc8693" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>RFC 8693 — Token Exchange</a></li>
+          <li class="mb-1"><a href="https://datatracker.ietf.org/doc/html/rfc9449" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>RFC 9449 — DPoP</a></li>
+          <li class="mb-1"><a href="https://datatracker.ietf.org/doc/html/rfc7523" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>RFC 7523 — JWT Client Auth</a></li>
+          <li class="mb-1"><a href="https://datatracker.ietf.org/doc/html/rfc8628" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>RFC 8628 — Device Grant</a></li>
+          <li class="mb-1"><a href="https://datatracker.ietf.org/doc/html/rfc7636" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>RFC 7636 — PKCE</a></li>
+          <li class="mb-1"><a href="https://spiffe.io/docs/latest/spire-about/" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>SPIRE Documentation</a></li>
+          <li><a href="https://www.keycloak.org/documentation" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>Keycloak Documentation</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card border-0 bg-white shadow-sm h-100">
+      <div class="card-body">
+        <h6 class="fw-semibold mb-3"><i class="bi bi-terminal text-secondary me-1"></i>Live Demos</h6>
+        <ul class="list-unstyled small mb-0">
+          <li class="mb-1"><a href="{{ url_for('index') }}" class="text-decoration-none"><i class="bi bi-house me-1"></i>Home — all flow buttons</a></li>
+          <li class="mb-1"><a href="{{ url_for('token_exchange_obo') }}" class="text-decoration-none"><i class="bi bi-arrow-left-right me-1"></i>On-Behalf-Of demo</a></li>
+          <li class="mb-1"><a href="{{ url_for('spiffe_demo') }}" class="text-decoration-none"><i class="bi bi-fingerprint me-1"></i>SPIFFE workload demo</a></li>
+          <li class="mb-1"><a href="{{ url_for('dpop_demo') }}" class="text-decoration-none"><i class="bi bi-patch-check me-1"></i>DPoP demo</a></li>
+          <li class="mb-1"><a href="{{ url_for('device_flow') }}" class="text-decoration-none"><i class="bi bi-tv me-1"></i>Device Authorization Grant</a></li>
+          <li class="mb-1"><a href="{{ url_for('introspect_demo') }}" class="text-decoration-none"><i class="bi bi-search me-1"></i>Token Introspection</a></li>
+          <li><a href="http://localhost:8001/docs" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>Resource Server API docs</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card border-0 bg-white shadow-sm h-100">
+      <div class="card-body">
+        <h6 class="fw-semibold mb-3"><i class="bi bi-tools text-secondary me-1"></i>Tools</h6>
+        <ul class="list-unstyled small mb-0">
+          <li class="mb-1"><a href="https://jwt.io" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>jwt.io — Online JWT decoder</a></li>
+          <li class="mb-1"><a href="{{ keycloak_url }}/admin/{{ realm }}/console" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>Keycloak Admin Console</a></li>
+          <li class="mb-1"><a href="{{ keycloak_url }}/realms/{{ realm }}/.well-known/openid-configuration" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>OIDC Discovery document</a></li>
+          <li class="mb-1"><a href="{{ keycloak_url }}/realms/{{ realm }}/protocol/openid-connect/certs" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>Keycloak JWKS endpoint</a></li>
+          <li class="mb-1"><a href="http://localhost:8002/ui" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>SPIFFE service UI</a></li>
+          <li><a href="http://localhost:8002/jwks" target="_blank" class="text-decoration-none">
+            <i class="bi bi-box-arrow-up-right me-1 text-muted" style="font-size:.7rem"></i>SPIFFE service JWKS</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .docs-card { transition: transform .15s, box-shadow .15s; }
+  .docs-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,.12) !important; }
+</style>
+
+{% endblock %}

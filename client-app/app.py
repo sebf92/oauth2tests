@@ -7,7 +7,7 @@ Demonstrates three OAuth2 grant types and eight advanced flows:
   3. Client Credentials — machine-to-machine, no user involved
   4. On-Behalf-Of (OBO) — RFC 8693 token exchange, middle tier acts on behalf of user
   5. Token Rescoping — RFC 8693 downscoping, strip roles from a token
-  6. SPIFFE/SPIRE — workload identity: JWT-SVID → OAuth2 bridge → resource server
+  6. SPIFFE/SPIRE — workload identity: RFC 7523 private_key_jwt → resource server
   7. OIDC Identity Layer — id_token, UserInfo endpoint, Discovery document
   8. DPoP — RFC 9449 proof of possession, sender-constrained tokens
   9. Device Authorization Grant — RFC 8628 device code flow for browserless clients
@@ -37,6 +37,8 @@ URL layout:
   /auth/logout                    Clear session + SSO logout from Keycloak
   /token/inspect                  Detailed JWT inspection page
   /api/call/<name>                Proxied calls to the Resource Server
+  /docs                           Documentation index
+  /docs/<slug>                    Rendered documentation page
 """
 
 import base64
@@ -48,7 +50,9 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
+import markdown as _markdown
 import requests
+from markupsafe import Markup
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes as crypto_hashes
 from cryptography.hazmat.primitives.asymmetric.ec import ECDSA, SECP256R1, generate_private_key
@@ -1037,6 +1041,106 @@ def token_inspect():
         refresh_token_info = decode_jwt(td["refresh_token"])  if "refresh_token" in td else None,
         id_token_info      = decode_jwt(td["id_token"])        if "id_token"      in td else None,
         flow=td.get("flow", "unknown"),
+    )
+
+
+# ── Docs section — rendered markdown documentation ────────────────────────────
+
+DOCS_DIR = os.getenv(
+    "DOCS_DIR",
+    # Development fallback: docs/ sits next to client-app/ in the project root
+    os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "docs")),
+)
+
+DOCS_MANIFEST = [
+    {
+        "slug":        "architecture",
+        "file":        "architecture.md",
+        "title":       "Architecture",
+        "icon":        "bi-diagram-3-fill",
+        "color":       "primary",
+        "badge":       "System Design",
+        "description": "Components, network topology, JWT structure, and security model",
+    },
+    {
+        "slug":        "oauth2-flows",
+        "file":        "oauth2-flows.md",
+        "title":       "OAuth2 / OIDC Flows",
+        "icon":        "bi-arrow-repeat",
+        "color":       "success",
+        "badge":       "Core Reference",
+        "description": "All eleven flows in detail — diagrams, request/response examples, and key differences",
+    },
+    {
+        "slug":        "spiffe-oauth2",
+        "file":        "spiffe-oauth2.md",
+        "title":       "SPIFFE / SPIRE + OAuth2",
+        "icon":        "bi-fingerprint",
+        "color":       "info",
+        "badge":       "Workload Identity",
+        "description": "JWT-SVIDs, RFC 7523 private_key_jwt client auth, and the legacy bridge pattern",
+    },
+    {
+        "slug":        "obo-manual-setup",
+        "file":        "obo-manual-setup.md",
+        "title":       "OBO Manual Setup",
+        "icon":        "bi-wrench-adjustable-circle-fill",
+        "color":       "warning",
+        "badge":       "How-To Guide",
+        "description": "Step-by-step guide for manually configuring On-Behalf-Of token exchange in KC 26.2+",
+    },
+]
+
+# Generate Pygments CSS once at startup; injected into docs_page.html
+try:
+    from pygments.formatters import HtmlFormatter as _HtmlFormatter
+    _PYGMENTS_CSS = _HtmlFormatter(style="monokai").get_style_defs(".highlight")
+except Exception:
+    _PYGMENTS_CSS = ""
+
+
+def _render_doc(filename: str):
+    """Read and render a markdown file. Returns (content_html, toc_html)."""
+    path = os.path.join(DOCS_DIR, filename)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        return (
+            Markup("<p class='text-danger'><strong>Documentation file not found.</strong><br>"
+                   f"Expected path: <code>{path}</code></p>"),
+            Markup(""),
+        )
+    md = _markdown.Markdown(
+        extensions=["tables", "fenced_code", "codehilite", "toc", "attr_list"],
+        extension_configs={
+            "codehilite": {"css_class": "highlight", "use_pygments": True},
+            "toc": {"title": "", "toc_depth": "2-3", "permalink": True,
+                    "permalink_class": "toc-anchor", "permalink_title": "¶"},
+        },
+    )
+    return Markup(md.convert(raw)), Markup(md.toc)
+
+
+@app.route("/docs")
+def docs_index():
+    return render_template("docs_index.html", docs=DOCS_MANIFEST)
+
+
+@app.route("/docs/<slug>")
+def docs_page(slug: str):
+    doc = next((d for d in DOCS_MANIFEST if d["slug"] == slug), None)
+    if not doc:
+        flash(f"Documentation page '{slug}' not found.", "warning")
+        return redirect(url_for("docs_index"))
+    content, toc = _render_doc(doc["file"])
+    return render_template(
+        "docs_page.html",
+        doc=doc,
+        content=content,
+        toc=toc,
+        all_docs=DOCS_MANIFEST,
+        pygments_css=_PYGMENTS_CSS,
     )
 
 

@@ -10,7 +10,7 @@
     Eleven flows demonstrated end-to-end: three OAuth2 grant types and eight advanced flows —
     OBO token exchange, downscoping, SPIFFE workload identity, OIDC, DPoP proof of possession,
     Device Authorization Grant, PKCE, and Token Introspection —
-    all backed by <strong>Keycloak 26</strong> and validated by the <strong>Resource Server</strong>.
+    all backed by <strong>Keycloak 26.6.1</strong> and validated by the <strong>Resource Server</strong>.
   </p>
 </div>
 
@@ -339,11 +339,11 @@
         <span class="badge bg-dark mb-2 align-self-start">Zero-Secret M2M</span>
         <p class="card-text text-muted small mb-3">
           A container proves its identity to <strong>SPIRE</strong> without any stored
-          secret. A JWT-SVID is mapped to a Keycloak service account via the
-          SPIFFE→OAuth2 bridge.
+          secret. KC 26.4+ native RFC 7523: an ephemeral EC key signs a
+          <code>client_assertion</code> — no <code>client_secret</code> anywhere.
         </p>
         <div class="bg-light rounded p-2 small font-monospace mb-3">
-          SPIRE attests → JWT-SVID → bridge → <em>access_token</em>
+          SPIRE attests → JWT-SVID → private_key_jwt → <em>access_token</em>
         </div>
         <a href="/auth/spiffe" class="btn btn-success w-100 mt-auto">
           <i class="bi bi-fingerprint me-1"></i>Run SPIFFE Demo

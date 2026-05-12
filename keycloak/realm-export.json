@@ -50,7 +50,8 @@
       "protocol": "openid-connect",
       "attributes": {
         "access.token.lifespan": "1800",
-        "post.logout.redirect.uris": "http://localhost:5000/*"
+        "post.logout.redirect.uris": "http://localhost:5000/*",
+        "standard.token.exchange.enabled": "true"
       },
       "fullScopeAllowed": true,
       "protocolMappers": [
@@ -112,10 +113,10 @@
     {
       "clientId": "spiffe-service",
       "name": "SPIFFE Service Account",
-      "description": "Service account for the SPIFFE workload identity demo (machine-to-machine)",
+      "description": "Service account for the SPIFFE workload identity demo — RFC 7523 private_key_jwt, no client_secret",
       "enabled": true,
       "publicClient": false,
-      "secret": "spiffe-service-secret",
+      "clientAuthenticatorType": "client-jwt",
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
@@ -124,6 +125,10 @@
       "webOrigins": [],
       "protocol": "openid-connect",
       "fullScopeAllowed": true,
+      "attributes": {
+        "use.jwks.url": "true",
+        "jwks.url": "http://spiffe-service:8002/jwks"
+      },
       "defaultClientScopes": [
         "web-origins",
         "acr",

@@ -2,3 +2,6 @@ flask==3.0.3
 requests==2.32.3
 # cryptography is needed for DPoP (EC key generation + ECDSA signing)
 cryptography>=42.0,<44
+# markdown rendering for the /docs section
+markdown>=3.7
+pygments>=2.18

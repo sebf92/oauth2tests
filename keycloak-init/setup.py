@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
-Configures Keycloak token-exchange permissions via the Admin REST API.
+Configures Keycloak clients via the Admin REST API.
 
-Realm import cannot express fine-grained authorization policies, so we apply
-them here after the realm has been imported.
+Realm import cannot express all per-client settings, so we apply them here
+after the realm has been imported.
 
 What this script does:
   1. Waits for Keycloak to be fully ready.
-  2. Enables fine-grained permissions on demo-client.
-     → Keycloak creates a token-exchange resource + a scope permission inside
-       the realm-management authorization server.
-  3. Creates a client policy that identifies middle-tier-client as the actor.
-  4. Attaches that policy to the token-exchange scope permission.
-     → middle-tier-client can now call the token endpoint with
-       grant_type=urn:ietf:params:oauth:grant-type:token-exchange and a
-       demo-client subject_token (On-Behalf-Of flow).
+  2. Enables Standard Token Exchange (KC 26.2+ GA) on middle-tier-client.
+     → Sets the 'standard.token.exchange.enabled' attribute to 'true'.
+       The old fine-grained authz approach (management/permissions + KC_FEATURES=preview)
+       is replaced by this per-client attribute in KC 26.2+.
+  3. Ensures spiffe-service, dpop-client, device-client, and pkce-client exist.
 """
 
 import sys
@@ -27,8 +24,6 @@ KC_MGMT    = "http://keycloak:9000"   # management interface (health, metrics) �
 REALM      = "demo"
 ADMIN_USER = "admin"
 ADMIN_PASS = "admin"
-
-POLICY_NAME = "allow-middle-tier-token-exchange"
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -118,92 +113,51 @@ def get_admin_token() -> str:
 # ── core setup ─────────────────────────────────────────────────────────────────
 
 def setup_token_exchange(token: str) -> None:
+    """
+    Enable Standard Token Exchange on middle-tier-client (KC 26.2+ approach).
+
+    KC 26.2 promoted Standard Token Exchange from preview to GA and changed the
+    permission model. The old approach used the realm-management authz server
+    (management/permissions endpoint) and required KC_FEATURES=preview.
+
+    The new approach simply sets 'standard.token.exchange.enabled' = 'true' on
+    the requesting client. No fine-grained authz policies are needed.
+    """
     h    = {"Authorization": f"Bearer {token}"}
     base = f"{KC_URL}/admin/realms/{REALM}"
 
-    # ── Step 1: resolve client UUIDs ──────────────────────────────────────────
-    demo_id = _get(f"{base}/clients", h, params={"clientId": "demo-client"}).json()[0]["id"]
-    print(f"  demo-client            id = {demo_id}")
+    for client_id_str in ("middle-tier-client", "demo-client"):
+        client_list = _get(f"{base}/clients", h, params={"clientId": client_id_str}).json()
+        cid = client_list[0]["id"]
+        print(f"  {client_id_str:<25} id = {cid}")
 
-    rm_id = _get(f"{base}/clients", h, params={"clientId": "realm-management"}).json()[0]["id"]
-    print(f"  realm-management       id = {rm_id}")
+        client_rep = _get(f"{base}/clients/{cid}", h).json()
+        attrs = client_rep.get("attributes") or {}
 
-    mid_id = _get(f"{base}/clients", h, params={"clientId": "middle-tier-client"}).json()[0]["id"]
-    print(f"  middle-tier-client     id = {mid_id}")
+        if attrs.get("standard.token.exchange.enabled") == "true":
+            print(f"  standard.token.exchange.enabled already set on {client_id_str}")
+            continue
 
-    # ── Step 2: enable fine-grained permissions on demo-client ────────────────
-    # This call creates a client.resource.{uuid} in realm-management's authz server
-    # and returns the UUIDs of the scope permissions for view/manage/token-exchange/…
-    mgmt = _put(
-        f"{base}/clients/{demo_id}/management/permissions",
-        h,
-        json={"enabled": True},
-    ).json()
-    tx_perm_id = mgmt.get("scopePermissions", {}).get("token-exchange")
-    if not tx_perm_id:
-        raise SystemExit(
-            f"token-exchange permission not found in management response: {mgmt}"
-        )
-    print(f"  token-exchange perm    id = {tx_perm_id}")
-
-    # ── Step 3: create (or reuse) a client policy for middle-tier-client ──────
-    create_resp = httpx.post(
-        f"{base}/clients/{rm_id}/authz/resource-server/policy/client",
-        headers=h,
-        json={
-            "name":             POLICY_NAME,
-            "description":      "Allows middle-tier-client to perform OBO token exchange",
-            "type":             "client",
-            "logic":            "POSITIVE",
-            "decisionStrategy": "UNANIMOUS",
-            "clients":          [mid_id],
-        },
-        timeout=10,
-    )
-    if create_resp.status_code == 409:
-        # Policy already exists — fetch its ID
-        existing = _get(
-            f"{base}/clients/{rm_id}/authz/resource-server/policy",
-            h,
-            params={"name": POLICY_NAME},
-        ).json()
-        policy_id = existing[0]["id"]
-        print(f"  client policy (exists) id = {policy_id}")
-    else:
-        create_resp.raise_for_status()
-        policy_id = create_resp.json()["id"]
-        print(f"  client policy (new)    id = {policy_id}")
-
-    # ── Step 4: attach the policy to the token-exchange scope permission ──────
-    # GET the current permission body so we can patch only the policies list
-    perm = _get(
-        f"{base}/clients/{rm_id}/authz/resource-server/permission/scope/{tx_perm_id}",
-        h,
-    ).json()
-
-    existing_policies: list[str] = perm.get("policies") or []
-    if policy_id not in existing_policies:
-        perm["policies"] = existing_policies + [policy_id]
-        _put(
-            f"{base}/clients/{rm_id}/authz/resource-server/permission/scope/{tx_perm_id}",
-            h,
-            json=perm,
-        )
-        print("✓ Policy attached to token-exchange permission")
-    else:
-        print("  policy already attached — nothing to do")
+        attrs["standard.token.exchange.enabled"] = "true"
+        client_rep["attributes"] = attrs
+        _put(f"{base}/clients/{cid}", h, json=client_rep)
+        print(f"✓ standard.token.exchange.enabled = true set on {client_id_str}")
 
 
 # ── spiffe-service client ──────────────────────────────────────────────────────
 
+SPIFFE_JWKS_URL = "http://spiffe-service:8002/jwks"
+
 def ensure_spiffe_service_client(token: str) -> None:
     """
-    Ensure the spiffe-service Keycloak client exists with the correct config.
+    Ensure spiffe-service uses RFC 7523 private_key_jwt auth (KC 26.4+ approach).
 
-    Keycloak's --import-realm only fires when the realm is first created, so
-    clients added to realm-export.json after the initial import are not picked
-    up on subsequent runs. This function is idempotent: it creates the client
-    when missing and assigns user-role to its service account.
+    No client_secret is configured. Keycloak validates client_assertion JWTs
+    by fetching the JWKS from spiffe-service's /jwks endpoint. The key is
+    generated in-memory at startup in spiffe-service/main.py.
+
+    Idempotent: creates the client if missing, migrates it if it exists with
+    the old client_secret authenticator type.
     """
     h    = {"Authorization": f"Bearer {token}"}
     base = f"{KC_URL}/admin/realms/{REALM}"
@@ -213,34 +167,50 @@ def ensure_spiffe_service_client(token: str) -> None:
     ).json()
 
     if existing:
-        client_id = existing[0]["id"]
-        print(f"  spiffe-service client  id = {client_id} (already exists)")
+        client      = existing[0]
+        client_id   = client["id"]
+        attrs       = client.get("attributes") or {}
+        auth_type   = client.get("clientAuthenticatorType", "")
+        jwks_ok     = attrs.get("use.jwks.url") == "true" and attrs.get("jwks.url") == SPIFFE_JWKS_URL
+
+        if auth_type == "client-jwt" and jwks_ok:
+            print(f"  spiffe-service client  id = {client_id} (already using private_key_jwt)")
+        else:
+            client["clientAuthenticatorType"] = "client-jwt"
+            attrs["use.jwks.url"]             = "true"
+            attrs["jwks.url"]                 = SPIFFE_JWKS_URL
+            client["attributes"]              = attrs
+            r = httpx.put(f"{base}/clients/{client_id}", headers=h, json=client, timeout=10)
+            r.raise_for_status()
+            print(f"  spiffe-service client  id = {client_id} (migrated to private_key_jwt)")
     else:
         r = httpx.post(
             f"{base}/clients",
             headers=h,
             json={
-                "clientId":               "spiffe-service",
-                "secret":                 "spiffe-service-secret",
-                "enabled":                True,
-                "serviceAccountsEnabled": True,
-                "standardFlowEnabled":    False,
+                "clientId":                  "spiffe-service",
+                "enabled":                   True,
+                "serviceAccountsEnabled":    True,
+                "standardFlowEnabled":       False,
                 "directAccessGrantsEnabled": False,
-                "publicClient":           False,
-                "protocol":               "openid-connect",
-                "defaultClientScopes":    ["web-origins", "acr", "profile", "roles", "email"],
+                "publicClient":              False,
+                "clientAuthenticatorType":   "client-jwt",
+                "protocol":                  "openid-connect",
+                "defaultClientScopes":       ["web-origins", "acr", "profile", "roles", "email"],
+                "attributes": {
+                    "use.jwks.url": "true",
+                    "jwks.url":     SPIFFE_JWKS_URL,
+                },
             },
             timeout=10,
         )
         r.raise_for_status()
-        location = r.headers.get("Location", "")
+        location  = r.headers.get("Location", "")
         client_id = location.rstrip("/").split("/")[-1]
-        print(f"  spiffe-service client  id = {client_id} (created)")
+        print(f"  spiffe-service client  id = {client_id} (created with private_key_jwt)")
 
     # Ensure service account has user-role
-    sa_user = httpx.get(
-        f"{base}/clients/{client_id}/service-account-user", headers=h, timeout=10
-    ).json()
+    sa_user    = httpx.get(f"{base}/clients/{client_id}/service-account-user", headers=h, timeout=10).json()
     sa_user_id = sa_user["id"]
 
     realm_roles = httpx.get(f"{base}/roles", headers=h, timeout=10).json()
@@ -249,17 +219,13 @@ def ensure_spiffe_service_client(token: str) -> None:
         print("  user-role not found in realm — skipping assignment")
         return
 
-    assigned = httpx.get(
-        f"{base}/users/{sa_user_id}/role-mappings/realm", headers=h, timeout=10
-    ).json()
+    assigned = httpx.get(f"{base}/users/{sa_user_id}/role-mappings/realm", headers=h, timeout=10).json()
     if any(r["name"] == "user-role" for r in assigned):
         print("  user-role already assigned to spiffe-service service account")
     else:
         r = httpx.post(
             f"{base}/users/{sa_user_id}/role-mappings/realm",
-            headers=h,
-            json=[user_role],
-            timeout=10,
+            headers=h, json=[user_role], timeout=10,
         )
         r.raise_for_status()
         print("  user-role assigned to spiffe-service service account")

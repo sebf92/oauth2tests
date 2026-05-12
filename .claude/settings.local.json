@@ -50,7 +50,19 @@
       "Bash(curl -s http://localhost:5000/auth/introspect)",
       "Bash(ls /c/Python*)",
       "Read(//usr/**)",
-      "Bash(curl -v -c /tmp/device_cookies.txt -b /tmp/device_cookies.txt -X POST http://localhost:8080/realms/demo/device -d user_code=LZNM-BRLC -o /tmp/device_submit.html)"
+      "Bash(curl -v -c /tmp/device_cookies.txt -b /tmp/device_cookies.txt -X POST http://localhost:8080/realms/demo/device -d user_code=LZNM-BRLC -o /tmp/device_submit.html)",
+      "Bash(curl -s http://localhost:8080/realms/master)",
+      "Bash(python3.exe -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('keycloak-version','not found'\\)\\)\")",
+      "Bash(curl -s http://localhost:9000/health)",
+      "Bash(curl -s http://localhost:8080/)",
+      "Bash(docker inspect *)",
+      "WebFetch(domain:www.keycloak.org)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.redhat.com)",
+      "Bash(docker pull *)",
+      "Bash(curl -s http://localhost:8002/)",
+      "Bash(curl -s http://localhost:8002/jwks)",
+      "mcp__Desktop_Commander__read_file"
     ]
   }
 }

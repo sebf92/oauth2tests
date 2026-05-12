@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.title }} — Docs{% endblock %}
+
+{% block content %}
+
+{# ── Pygments syntax-highlighting CSS ─────────────────────────────────────────── #}
+{% if pygments_css %}
+<style>{{ pygments_css | safe }}</style>
+{% endif %}
+
+<style>
+/* ── Layout ─────────────────────────────────────────────────────────────────── */
+.docs-sidebar {
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 5rem);
+  overflow-y: auto;
+}
+.docs-sidebar .nav-link {
+  padding: .35rem .75rem;
+  border-radius: .375rem;
+  color: #495057;
+  font-size: .875rem;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  transition: background .12s, color .12s;
+}
+.docs-sidebar .nav-link:hover { background: #e9ecef; color: #212529; }
+.docs-sidebar .nav-link.active {
+  background: #0d6efd;
+  color: #fff !important;
+  font-weight: 600;
+}
+.docs-sidebar .nav-link.active i { color: #fff !important; }
+
+/* ── TOC panel ──────────────────────────────────────────────────────────────── */
+.doc-toc-panel {
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 5rem);
+  overflow-y: auto;
+  font-size: .82rem;
+}
+.doc-toc-panel .toc-title {
+  font-size: .7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: #adb5bd;
+  margin-bottom: .5rem;
+}
+/* python-markdown toc output */
+.doc-toc-panel div.toc ul { list-style: none; padding-left: 0; margin: 0; }
+.doc-toc-panel div.toc li { margin-bottom: .18rem; }
+.doc-toc-panel div.toc a { color: #6c757d; text-decoration: none; }
+.doc-toc-panel div.toc a:hover { color: #0d6efd; }
+.doc-toc-panel div.toc ul ul { padding-left: .85rem; margin-top: .15rem; }
+.doc-toc-panel div.toc ul ul a { font-size: .79rem; color: #adb5bd; }
+.doc-toc-panel div.toc ul ul a:hover { color: #0d6efd; }
+
+/* ── Markdown content ───────────────────────────────────────────────────────── */
+.doc-content {
+  font-size: .95rem;
+  line-height: 1.75;
+  color: #212529;
+  min-width: 0; /* prevent overflow in flex/grid */
+}
+
+/* Headings */
+.doc-content h1 {
+  font-size: 1.65rem;
+  font-weight: 700;
+  margin-top: 0;
+  margin-bottom: 1rem;
+  padding-bottom: .5rem;
+  border-bottom: 2px solid #dee2e6;
+}
+.doc-content h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-top: 2.25rem;
+  margin-bottom: .75rem;
+  padding-bottom: .35rem;
+  border-bottom: 1px solid #dee2e6;
+  color: #1a1a2e;
+}
+.doc-content h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-top: 1.75rem;
+  margin-bottom: .5rem;
+  color: #0d6efd;
+}
+.doc-content h4 {
+  font-size: .95rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: .4rem;
+  color: #495057;
+}
+
+/* Anchor permalinks added by python-markdown toc extension */
+.doc-content .toc-anchor {
+  font-size: .6em;
+  margin-left: .35rem;
+  color: #ced4da;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity .15s;
+  vertical-align: middle;
+}
+.doc-content h2:hover .toc-anchor,
+.doc-content h3:hover .toc-anchor,
+.doc-content h4:hover .toc-anchor { opacity: 1; }
+
+/* Body text */
+.doc-content p { margin-bottom: 1rem; }
+.doc-content ul, .doc-content ol { padding-left: 1.6rem; margin-bottom: 1rem; }
+.doc-content li { margin-bottom: .3rem; }
+.doc-content li > p { margin-bottom: .3rem; }
+
+/* Inline code */
+.doc-content :not(pre) > code {
+  background: #f0f0f8;
+  color: #c7254e;
+  padding: .12em .38em;
+  border-radius: .25rem;
+  font-size: .875em;
+  font-family: 'Courier New', Consolas, monospace;
+  word-break: break-word;
+}
+
+/* Fenced code blocks WITHOUT syntax highlighting (plain pre) */
+.doc-content pre:not(.highlight pre) {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 1rem 1.25rem;
+  border-radius: .5rem;
+  overflow-x: auto;
+  font-size: .78rem;
+  line-height: 1.55;
+  margin-bottom: 1.25rem;
+  white-space: pre;
+}
+.doc-content pre:not(.highlight pre) code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+  border-radius: 0;
+}
+
+/* Fenced code blocks WITH Pygments highlighting (.highlight wrapper) */
+.doc-content .highlight {
+  border-radius: .5rem;
+  margin-bottom: 1.25rem;
+  overflow: hidden;
+}
+.doc-content .highlight pre {
+  background: #272822 !important; /* monokai bg */
+  color: #f8f8f2;
+  padding: 1rem 1.25rem;
+  margin: 0;
+  overflow-x: auto;
+  font-size: .78rem;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+/* Tables */
+.doc-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1.25rem;
+  font-size: .875rem;
+}
+.doc-content thead th {
+  background: #f1f3f5;
+  border: 1px solid #dee2e6;
+  padding: .5rem .85rem;
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.doc-content tbody td {
+  border: 1px solid #dee2e6;
+  padding: .4rem .85rem;
+  vertical-align: top;
+}
+.doc-content tbody tr:nth-child(even) td { background: #f8f9fa; }
+.doc-content tbody tr:hover td { background: #e8f0fe; transition: background .1s; }
+
+/* Blockquotes */
+.doc-content blockquote {
+  border-left: 4px solid #0d6efd;
+  padding: .6rem 1rem;
+  background: #f0f4ff;
+  color: #495057;
+  border-radius: 0 .375rem .375rem 0;
+  margin: 1rem 0 1.25rem;
+  font-size: .9rem;
+}
+.doc-content blockquote p:last-child { margin-bottom: 0; }
+.doc-content blockquote strong { color: #0d4a9e; }
+
+/* Horizontal rules */
+.doc-content hr {
+  border: none;
+  border-top: 1px solid #dee2e6;
+  margin: 2rem 0;
+}
+
+/* ── Breadcrumb ─────────────────────────────────────────────────────────────── */
+.docs-breadcrumb { font-size: .85rem; }
+</style>
+
+{# ── Breadcrumb ───────────────────────────────────────────────────────────────── #}
+<nav class="docs-breadcrumb mb-3" aria-label="breadcrumb">
+  <ol class="breadcrumb mb-0">
+    <li class="breadcrumb-item"><a href="{{ url_for('docs_index') }}" class="text-decoration-none"><i class="bi bi-book me-1"></i>Docs</a></li>
+    <li class="breadcrumb-item active">{{ doc.title }}</li>
+  </ol>
+</nav>
+
+{# ── Three-column layout ──────────────────────────────────────────────────────── #}
+<div class="row g-4 align-items-start">
+
+  {# ── Left sidebar — doc navigation ──────────────────────────────────────────── #}
+  <div class="col-lg-2 d-none d-lg-block">
+    <div class="docs-sidebar">
+      <div class="text-uppercase fw-bold mb-2" style="font-size:.7rem;letter-spacing:.06em;color:#adb5bd">
+        <i class="bi bi-book me-1"></i>Guides
+      </div>
+      <nav class="nav flex-column gap-1">
+        {% for d in all_docs %}
+        <a href="{{ url_for('docs_page', slug=d.slug) }}"
+           class="nav-link {{ 'active' if d.slug == doc.slug else '' }}">
+          <i class="bi {{ d.icon }} {{ 'text-white' if d.slug == doc.slug else 'text-' + d.color }}"></i>
+          {{ d.title }}
+        </a>
+        {% endfor %}
+      </nav>
+      <hr class="my-3">
+      <nav class="nav flex-column gap-1">
+        <a href="{{ url_for('index') }}" class="nav-link" style="font-size:.8rem;color:#6c757d">
+          <i class="bi bi-house me-1"></i>Home
+        </a>
+        <a href="{{ keycloak_url }}/admin/{{ realm }}/console" target="_blank"
+           class="nav-link" style="font-size:.8rem;color:#6c757d">
+          <i class="bi bi-gear me-1"></i>Admin Console <i class="bi bi-box-arrow-up-right ms-1" style="font-size:.65rem"></i>
+        </a>
+      </nav>
+    </div>
+  </div>
+
+  {# ── Main content ─────────────────────────────────────────────────────────────── #}
+  <div class="col-lg-10 col-xl-7">
+
+    {# Mobile doc selector #}
+    <div class="d-lg-none mb-3">
+      <select class="form-select form-select-sm"
+              onchange="window.location.href=this.value">
+        {% for d in all_docs %}
+        <option value="{{ url_for('docs_page', slug=d.slug) }}"
+                {{ 'selected' if d.slug == doc.slug else '' }}>
+          {{ d.title }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    {# Doc header card #}
+    <div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-{{ doc.color }}">
+      <div class="d-flex align-items-center gap-3">
+        <i class="bi {{ doc.icon }} text-{{ doc.color }}" style="font-size:1.75rem;flex-shrink:0"></i>
+        <div>
+          <h1 class="h4 fw-bold mb-1">{{ doc.title }}</h1>
+          <p class="text-muted small mb-0">{{ doc.description }}</p>
+        </div>
+        <span class="badge bg-{{ doc.color }} {{ 'text-dark' if doc.color in ('info','warning') else '' }} ms-auto align-self-start">
+          {{ doc.badge }}
+        </span>
+      </div>
+    </div>
+
+    {# Rendered markdown #}
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-4 p-lg-5">
+        <article class="doc-content">
+          {{ content }}
+        </article>
+      </div>
+    </div>
+
+    {# Prev / Next navigation #}
+    {% set ns = namespace(prev_doc=none, next_doc=none, found=false) %}
+    {% for d in all_docs %}
+      {% if ns.found and ns.next_doc is none %}{% set ns.next_doc = d %}{% endif %}
+      {% if d.slug == doc.slug %}{% set ns.found = true %}{% endif %}
+      {% if not ns.found %}{% set ns.prev_doc = d %}{% endif %}
+    {% endfor %}
+    <div class="d-flex justify-content-between mt-4 gap-3">
+      {% if ns.prev_doc %}
+      <a href="{{ url_for('docs_page', slug=ns.prev_doc.slug) }}"
+         class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-2">
+        <i class="bi bi-arrow-left"></i>
+        <span>
+          <small class="d-block text-muted" style="font-size:.7rem">Previous</small>
+          {{ ns.prev_doc.title }}
+        </span>
+      </a>
+      {% else %}<div></div>{% endif %}
+      {% if ns.next_doc %}
+      <a href="{{ url_for('docs_page', slug=ns.next_doc.slug) }}"
+         class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-2 text-end">
+        <span>
+          <small class="d-block text-muted" style="font-size:.7rem">Next</small>
+          {{ ns.next_doc.title }}
+        </span>
+        <i class="bi bi-arrow-right"></i>
+      </a>
+      {% else %}<div></div>{% endif %}
+    </div>
+  </div>
+
+  {# ── Right — Table of Contents ─────────────────────────────────────────────── #}
+  <div class="col-xl-3 d-none d-xl-block">
+    {% if toc %}
+    <div class="doc-toc-panel">
+      <div class="toc-title"><i class="bi bi-list-nested me-1"></i>On this page</div>
+      {{ toc }}
+    </div>
+    {% endif %}
+  </div>
+
+</div>{# /row #}
+
+{% endblock %}

@@ -423,7 +423,7 @@
       <li>The <code>ath</code> claim in the API call proof prevents using the proof with a different token.</li>
       <li>Each proof has a unique <code>jti</code>; resource servers can keep a short-lived set of seen JTIs to block replays within the freshness window.</li>
       <li>DPoP is required by <strong>FAPI 2.0</strong> (Financial-grade API) and is recommended by the OAuth 2.0 Security Best Current Practice (RFC 9700).</li>
-      <li>Keycloak requires <code>KC_FEATURES=preview</code> and the <code>dpop.bound.access.tokens: true</code> client attribute — both configured in this demo.</li>
+      <li>DPoP is GA in Keycloak 26.4+ — no feature flags required. The <code>dpop.bound.access.tokens: true</code> client attribute enforces DPoP binding for every token issued to that client.</li>
     </ul>
   </div>
 </div>

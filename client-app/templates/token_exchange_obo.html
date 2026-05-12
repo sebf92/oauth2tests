@@ -88,18 +88,12 @@
           <pre class="mt-2 mb-1 bg-dark text-light p-2 rounded" style="font-size:.72rem">docker compose logs keycloak-init</pre>
           If it failed, you can configure the permission manually:
           <ol class="mt-1 mb-0">
-            <li>Open the <a href="{{ keycloak_url }}/admin/{{ realm }}/console" target="_blank">Admin Console</a>
-                → <strong>Clients → demo-client → Permissions</strong> tab</li>
-            <li>Enable <em>Fine-grained permissions</em></li>
-            <li>Edit the <em>token-exchange</em> permission → add a client policy for <code>middle-tier-client</code></li>
+            <li>Check that <code>standard.token.exchange.enabled = true</code> is set on
+                <code>middle-tier-client</code> in the
+                <a href="{{ keycloak_url }}/admin/{{ realm }}/console" target="_blank">Admin Console</a>
+                (Advanced tab → Additional settings)</li>
+            <li>Or re-run <code>docker compose run --rm keycloak-init</code> to apply it automatically</li>
           </ol>
-        </div>
-        {% elif exchange_result.status_code == 501 %}
-        <div class="alert alert-warning small">
-          <i class="bi bi-info-circle-fill me-1"></i>
-          <strong>Token exchange is not enabled.</strong>
-          Make sure <code>KC_FEATURES=preview</code> is set in docker-compose.yml and
-          Keycloak has been restarted.
         </div>
         {% endif %}
 
@@ -223,7 +217,7 @@
       <li>The <code>sub</code> claim (user identity) is <strong>preserved</strong> in the exchanged token.</li>
       <li>The <code>azp</code> (authorized party) changes to <code>middle-tier-client</code>, recording which service made the exchange.</li>
       <li>An <code>act</code> (actor) claim may appear, building a delegation chain auditable by downstream services.</li>
-      <li>Requires <code>KC_FEATURES=preview</code> in Keycloak <em>and</em> fine-grained permission policies in the admin console.</li>
+      <li>Standard Token Exchange is GA in Keycloak 26.2+ — no feature flags required. The <code>standard.token.exchange.enabled</code> attribute on <code>middle-tier-client</code> is all that is needed.</li>
     </ul>
   </div>
 </div>

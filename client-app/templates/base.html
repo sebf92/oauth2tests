@@ -59,6 +59,12 @@
         {% if is_authenticated %}
         <li class="nav-item"><a class="nav-link" href="/token/inspect"><i class="bi bi-search me-1"></i>Token Inspector</a></li>
         {% endif %}
+        <li class="nav-item"><a class="nav-link" href="/docs"><i class="bi bi-book me-1"></i>Docs</a></li>
+        <li class="nav-item">
+          <a class="nav-link" href="http://localhost:8002/ui" target="_blank">
+            <i class="bi bi-fingerprint text-info me-1"></i>SPIFFE Service <i class="bi bi-box-arrow-up-right ms-1" style="font-size:.7rem"></i>
+          </a>
+        </li>
         <li class="nav-item">
           <a class="nav-link" href="{{ keycloak_url }}/realms/{{ realm }}/account" target="_blank">
             <i class="bi bi-person-circle me-1"></i>Keycloak Account <i class="bi bi-box-arrow-up-right" style="font-size:.7rem"></i>
@@ -106,7 +112,7 @@
 </div>
 
 <footer class="py-3 mt-4 border-top bg-white text-center text-muted small">
-  OAuth2 + JWT Learning Demo &bull; Keycloak 26 &bull; FastAPI &bull; Flask &bull; Docker
+  OAuth2 + JWT Learning Demo &bull; Keycloak 26.6.1 &bull; FastAPI &bull; Flask &bull; Docker
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>

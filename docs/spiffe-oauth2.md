@@ -6,10 +6,10 @@
 2. [Core Concepts](#core-concepts)
 3. [SPIRE Architecture](#spire-architecture)
 4. [JWT-SVID in Detail](#jwt-svid-in-detail)
-5. [The SPIFFE→OAuth2 Bridge Pattern](#the-spiffeoauth2-bridge-pattern)
+5. [How This Demo Works (KC 26.4+ Native)](#how-this-demo-works-kc-264-native)
 6. [How This Demo Is Wired](#how-this-demo-is-wired)
 7. [Step-by-Step Flow](#step-by-step-flow)
-8. [Future Path: RFC 7523 Direct (Keycloak 26.4+)](#future-path-rfc-7523-direct-keycloak-264)
+8. [Legacy: The SPIFFE→OAuth2 Bridge Pattern](#legacy-the-spiffeoauth2-bridge-pattern)
 9. [Security Properties](#security-properties)
 10. [Comparison: SPIFFE vs Client Credentials](#comparison-spiffe-vs-client-credentials)
 11. [Troubleshooting](#troubleshooting)
@@ -109,7 +109,8 @@ This demo uses the **unix attestor** with `unix:uid:0` (root inside the containe
 │                                   │ spiffe-service │            │
 │                                   │ (shared PID ns)│            │
 │                                   │ 1. fetch SVID  │            │
-│                                   │ 2. bridge→KC   │            │
+│                                   │ 2. private_key │            │
+│                                   │    _jwt → KC   │            │
 │                                   │ 3. call API    │            │
 │                                   └────────────────┘            │
 └─────────────────────────────────────────────────────────────────┘
@@ -154,7 +155,7 @@ its own tokens — these are separate key pairs.
 ```json
 {
   "sub": "spiffe://demo.local/spiffe-service",
-  "aud": ["http://keycloak:8080/realms/demo/protocol/openid-connect/token"],
+  "aud": ["spiffe://demo.local"],
   "iat": 1700000000,
   "exp": 1700000300
 }
@@ -165,57 +166,75 @@ Key fields:
 | Claim | Value | Meaning |
 |-------|-------|---------|
 | `sub` | `spiffe://demo.local/spiffe-service` | The workload's identity |
-| `aud` | Keycloak token URL | The intended recipient (prevents token reuse at other endpoints) |
+| `aud` | `spiffe://demo.local` | The intended recipient (prevents token reuse at other endpoints) |
 | `iat` | Unix timestamp | Issued at (by SPIRE) |
 | `exp` | `iat + 300` | Expires in ~5 minutes (enforced by SPIRE) |
 
-The **audience** (`aud`) is set to the Keycloak token endpoint URL. This is important: the
-JWT-SVID can only be used to talk to Keycloak, not forwarded to any other service.
-
 ---
 
-## The SPIFFE→OAuth2 Bridge Pattern
+## How This Demo Works (KC 26.4+ Native)
 
-This demo runs on **Keycloak 26.0**, which cannot yet natively validate a JWT-SVID as a
-client assertion (that requires Keycloak 26.4+ with the Federated Client Authentication
-feature). The bridge pattern works around this:
+This demo runs on **Keycloak 26.6.1** and uses the **KC 26.4+ native RFC 7523
+`private_key_jwt` client authentication**. No `client_secret` is stored or transmitted.
+
+The key idea: instead of a static secret, `spiffe-service` generates an **ephemeral EC P-256
+key pair** at process startup, exposes the public key via `GET /jwks`, and signs short-lived
+JWT assertions with the private key. Keycloak validates those assertions by fetching `/jwks`.
 
 ```
-spiffe-service                     Keycloak
-      │                                │
-      │  1. fetch_jwt_svids()          │
-      │◄──── SPIRE (JWT-SVID) ─────────┤
-      │                                │
-      │  2. validate SPIFFE ID locally │
-      │     (check sub, exp, aud)      │
-      │                                │
-      │  3. POST /token                │
-      │     grant_type=client_cred.    │
-      │     client_id=spiffe-service   │
-      │     client_secret=...          │──► validate secret
-      │                                │
-      │◄────── access_token ───────────│
-      │                                │
-      │  4. GET /api/products          │
-      │     Authorization: Bearer ...  │
-      │────────────────────────────────►
+spiffe-service              SPIRE                Keycloak           Resource Server
+      │                       │                      │                    │
+      │ startup: generate      │                      │                    │
+      │ EC key pair in memory  │                      │                    │
+      │ expose GET /jwks ──────┼──────────────────────┼──────────►(KC fetches on demand)
+      │                       │                      │                    │
+      │ fetch_jwt_svids()      │                      │                    │
+      ├──────────────────────►│                      │                    │
+      │◄── JWT-SVID ──────────│                      │                    │
+      │    (ES256, ~5 min)    │                      │                    │
+      │                       │                      │                    │
+      │ build client_assertion│                      │                    │
+      │ JWT (RFC 7523):        │                      │                    │
+      │   iss/sub = SVC_ID    │                      │                    │
+      │   aud = token endpoint │                      │                    │
+      │   signed with EC key  │                      │                    │
+      │                       │                      │                    │
+      │ POST /token            │                      │                    │
+      │ grant_type=client_cred │                      │                    │
+      │ client_assertion=<JWT>│                      │                    │
+      ├───────────────────────┼─────────────────────►│                    │
+      │                       │                      │ fetch GET /jwks    │
+      │                       │                      │◄─────────────────── │
+      │                       │                      │ verify ES256 sig   │
+      │◄──────────────────────┼── access_token ──────│                    │
+      │                       │                      │                    │
+      │ GET /api/products      │                      │                    │
+      │ Authorization: Bearer  │                      │                    │
+      ├───────────────────────┼──────────────────────┼───────────────────►│
+      │◄────────────────────────────────────────── 200 OK ────────────────│
 ```
 
-The bridge is the mapping table inside `spiffe-service/main.py`:
+### Why the JWT-SVID is not used directly as the client_assertion
 
-```python
-SPIFFE_CLIENT_MAP: dict[str, tuple[str, str]] = {
-    "spiffe://demo.local/spiffe-service": ("spiffe-service", "spiffe-service-secret"),
-}
-```
+The `client_assertion` in RFC 7523 requires `iss` and `sub` to equal the OAuth2 client ID
+(`spiffe-service`). But SPIRE sets those claims to the SPIFFE ID
+(`spiffe://demo.local/spiffe-service`) — Keycloak would not recognise it as the client.
 
-**Security model**: The bridge trusts the SPIRE-issued JWT-SVID as proof of identity. Since
-SPIRE only issues SVIDs to workloads that pass attestation, and the SVID is short-lived and
-audience-restricted, the bridge can safely map the SPIFFE ID to a Keycloak client and obtain
-a `client_credentials` token on its behalf.
+The design used here keeps both identities separate:
+- The **JWT-SVID** is fetched from SPIRE to demonstrate workload attestation (Step 1).
+- A **separate RFC 7523 JWT**, signed with the service's own EC key, is used for client auth
+  (Step 3). Keycloak validates it via `GET /jwks`.
 
-The Keycloak service account (`service-account-spiffe-service`) has `user-role` and can call
-`GET /api/products` and `GET /api/users/me`.
+This is the production-grade approach: the SPIRE identity confirms *which workload is running*;
+the private_key_jwt mechanism secures the OAuth2 client handshake.
+
+### Audience discovery
+
+`KC_HOSTNAME=localhost` means Keycloak publishes its token endpoint as
+`http://localhost:8080/realms/demo/...` (public URL). Inside Docker, requests are made via
+`http://keycloak:8080/...`. Keycloak validates `aud` in the client assertion against its
+*published* URL, so `spiffe-service/main.py` discovers the correct audience at startup by
+calling `/.well-known/openid-configuration` and reading `token_endpoint`.
 
 ---
 
@@ -228,12 +247,25 @@ The Keycloak service account (`service-account-spiffe-service`) has `user-role` 
 | `spire-server` | `ghcr.io/spiffe/spire-server:1.10.0` (official) | CA, registry, join tokens |
 | `spire-init` | `./spire/init` (Alpine + spire-server binary) | One-shot: creates token + workload entry |
 | `spire-agent` | `./spire/agent-wrapper` (Alpine + spire-agent binary) | Attestation + Workload API |
-| `spiffe-service` | `./spiffe-service` (Python/FastAPI) | Demo workload |
+| `spiffe-service` | `./spiffe-service` (Python/FastAPI) | Demo workload — JSON API + HTML UI at `/ui` |
 
 > **Why custom wrapper images?** The official SPIRE images are **scratch-based** (no shell,
 > no shared libraries). `spire-init` and `spire-agent` need shell scripts to orchestrate
 > startup. The wrapper Dockerfiles copy the statically-compiled SPIRE binary into Alpine,
 > which provides `/bin/sh`.
+
+### SPIFFE Service UI (port 8002)
+
+`spiffe-service` ships a Bootstrap HTML UI alongside its JSON API:
+
+| URL | Description |
+|-----|-------------|
+| `http://localhost:8002/ui` | Home — service config, auth-flow diagram, endpoint reference |
+| `http://localhost:8002/ui/demo` | Interactive demo runner — click **Run Demo** to execute the 4-step SPIFFE → OAuth2 → API pipeline and see JWT claims rendered inline |
+| `http://localhost:8002/jwks` | Public JWKS (Keycloak fetches this to verify `client_assertion`) |
+| `http://localhost:8002/docs` | FastAPI / Swagger UI |
+
+The HTML UI calls the existing `GET /demo` JSON endpoint via `fetch()` and renders each step (SVID claims, Keycloak access token claims, resource server response) in expandable cards without a page reload.
 
 ### Shared volumes
 
@@ -299,19 +331,23 @@ Declared in `realm-export.json` and ensured on every startup by `keycloak-init`:
 {
   "clientId": "spiffe-service",
   "serviceAccountsEnabled": true,
-  "secret": "spiffe-service-secret",
-  "standardFlowEnabled": false
+  "standardFlowEnabled": false,
+  "clientAuthenticatorType": "client-jwt",
+  "attributes": {
+    "use.jwks.url": "true",
+    "jwks.url":     "http://spiffe-service:8002/jwks"
+  }
 }
 ```
 
-The service account user `service-account-spiffe-service` has `user-role`, allowing it to
-call `GET /api/products` on the resource server.
+No `secret` field — the client authenticates exclusively via signed JWT assertions.
+Keycloak fetches `GET /jwks` on `spiffe-service` to verify the ES256 signature.
 
 > **Why `keycloak-init` provisions this client:** Keycloak only processes `realm-export.json`
 > when the realm does not yet exist in PostgreSQL. If the realm was created before
-> `spiffe-service` was added to the export, the client would be absent. `keycloak-init`
-> calls `ensure_spiffe_service_client()` on every startup to create the client when missing
-> and assign the role to its service account — making the setup idempotent.
+> `spiffe-service` was added to the export, the client would be absent or misconfigured.
+> `keycloak-init` calls `ensure_spiffe_service_client()` on every startup to create or
+> migrate the client and assign the role to its service account — making the setup idempotent.
 
 ---
 
@@ -319,6 +355,10 @@ call `GET /api/products` on the resource server.
 
 ```
 spiffe-service             SPIRE agent           Keycloak          Resource Server
+      │                        │                     │                    │
+      │  startup: EC key pair  │                     │                    │
+      │  generated in memory   │                     │                    │
+      │  GET /jwks exposed ────┼─────────────────────┼──────────► (fetched on-demand)
       │                        │                     │                    │
       │  WorkloadApiClient     │                     │                    │
       │  fetch_jwt_svids(aud)  │                     │                    │
@@ -328,16 +368,20 @@ spiffe-service             SPIRE agent           Keycloak          Resource Serv
       │◄── JWT-SVID ───────────│                     │                    │
       │    (ES256, ~5 min TTL) │                     │                    │
       │                        │                     │                    │
-      │  validate locally:     │                     │                    │
-      │  - sub = spiffe://...  │                     │                    │
-      │  - exp not passed      │                     │                    │
-      │  - look up in map      │                     │                    │
+      │  build client_assertion│                     │                    │
+      │  RFC 7523 JWT:         │                     │                    │
+      │  iss/sub=spiffe-service│                     │                    │
+      │  aud=token_endpoint    │                     │                    │
+      │  signed with EC privkey│                     │                    │
       │                        │                     │                    │
       │  POST /token           │                     │                    │
-      │  grant_type=client_cred│                     │                    │
-      │  client_id=spiffe-svc  │                     │                    │
-      │  client_secret=...     │                     │                    │
+      │  grant_type=           │                     │                    │
+      │    client_credentials  │                     │                    │
+      │  client_assertion=JWT  │                     │                    │
       ├────────────────────────┼────────────────────►│                    │
+      │                        │                     │ GET /jwks          │
+      │                        │                     │◄────────────────── │
+      │                        │                     │ verify ES256 sig   │
       │◄────────────────────── access_token ─────────│                    │
       │                        │                     │                    │
       │  GET /api/products     │                     │                    │
@@ -349,67 +393,74 @@ spiffe-service             SPIRE agent           Keycloak          Resource Serv
 
 ---
 
-## Future Path: RFC 7523 Direct (Keycloak 26.4+)
+## Legacy: The SPIFFE→OAuth2 Bridge Pattern
 
-With **Keycloak 26.4+** and its **Federated Client Authentication** (preview) feature, the
-bridge step is eliminated. The JWT-SVID is presented directly to Keycloak as a
-`client_assertion` per [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523):
+> **Historical note:** The bridge pattern below was used before KC 26.4+ native client
+> authentication was available. It is described here for reference only — this demo no longer
+> uses it.
 
-```http
-POST /realms/demo/protocol/openid-connect/token
-Content-Type: application/x-www-form-urlencoded
+With older Keycloak versions (pre-26.4), the service could not authenticate to Keycloak using
+the JWT-SVID directly. The workaround was a "bridge": look up the Keycloak client credentials
+from a local mapping table indexed by SPIFFE ID, then use those credentials to obtain a token.
 
-grant_type=client_credentials
-&client_id=spiffe-service
-&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
-&client_assertion=<JWT-SVID>
+```
+spiffe-service                     Keycloak
+      │                                │
+      │  1. fetch_jwt_svids()          │
+      │◄──── SPIRE (JWT-SVID) ─────────┤
+      │                                │
+      │  2. validate SPIFFE ID locally │
+      │     look up in SPIFFE_CLIENT_MAP
+      │                                │
+      │  3. POST /token                │
+      │     grant_type=client_cred.    │
+      │     client_id=spiffe-service   │
+      │     client_secret=...  ────────► validate secret
+      │                                │
+      │◄────── access_token ───────────│
 ```
 
-Keycloak would:
+The bridge table in `spiffe-service/main.py`:
 
-1. Decode the `client_assertion` JWT.
-2. Fetch SPIRE's JWKS endpoint to verify the ES256 signature.
-3. Check `sub` matches `spiffe://demo.local/spiffe-service`.
-4. Issue an OAuth2 access token.
+```python
+SPIFFE_CLIENT_MAP: dict[str, tuple[str, str]] = {
+    "spiffe://demo.local/spiffe-service": ("spiffe-service", "spiffe-service-secret"),
+}
+```
 
-This eliminates the `client_secret` entirely. The only remaining secret in the system is the
-SPIRE server's private key — which never leaves the SPIRE server.
+**Why this is inferior:**
+- A static `client_secret` must still be stored somewhere — defeating the goal of zero secrets.
+- An attacker who steals the secret can impersonate the service without any SPIRE attestation.
+- The SPIFFE identity provides no cryptographic binding to the OAuth2 token request.
 
-This demo currently uses **Keycloak 26.0**, which does not yet support Federated Client
-Authentication. To upgrade when 26.4+ is released:
-
-1. Change `keycloak` image to `quay.io/keycloak/keycloak:26.4` (or later) in `docker-compose.yml`.
-2. Configure a JWKS URL pointing to SPIRE's JWT authority endpoint in the Keycloak client's
-   authentication settings (Federated Identity Providers → JWKS URL).
-3. Replace `exchange_spiffe_for_oauth2()` in `spiffe-service/main.py` to send the raw
-   JWT-SVID as `client_assertion` instead of using the hardcoded secret.
-4. Remove the `SPIFFE_CLIENT_MAP` bridge table — it is no longer needed.
+The KC 26.4+ native approach eliminates this entirely: the EC key is generated in memory at
+startup, never persisted, and the JWKS endpoint rotates automatically on each restart.
 
 ---
 
 ## Security Properties
 
-### What SPIFFE provides that Client Credentials does not
+### What SPIFFE + private_key_jwt provides that Client Credentials does not
 
-| Property | Client Credentials | SPIFFE |
-|----------|-------------------|--------|
-| Identity proof | Secret known to the service | Runtime-attested OS identity |
-| Credential lifetime | Until manually rotated | ~5 minutes (auto-renewed) |
-| Leak risk | Secret can be copied and reused anywhere | SVID is audience-restricted and short-lived |
-| Rotation | Manual or CI/CD pipeline | Automatic (SPIRE handles it) |
+| Property | Client Credentials | SPIFFE + private_key_jwt |
+|----------|-------------------|--------------------------|
+| Identity proof | Secret known to the service | Runtime-attested OS identity + ephemeral key |
+| Credential lifetime | Until manually rotated | Key regenerated on restart; assertion exp = 60 s |
+| Leak risk | Secret can be copied and reused anywhere | Key is in-memory only; never persisted |
+| Rotation | Manual or CI/CD pipeline | Automatic (new key on every restart) |
 | Auditability | "The secret was used" | "This container, attested at time T, ran this workload" |
 | Works without a secret store | No | Yes |
 
 ### Threat model
 
 **Mitigated**: An attacker who exfiltrates the container's environment variables gets no
-usable long-lived credential. The JWT-SVID expires in 5 minutes and can only be used at the
-configured audience (Keycloak token endpoint). A new SVID requires a live, attested container.
+usable long-lived credential. The JWT-SVID expires in 5 minutes. The EC private key lives
+only in process memory and is never written to disk.
 
 **Not mitigated by SPIFFE alone**: An attacker who can exec into the running container can
-still call the Workload API and receive a fresh SVID. This is why SPIRE workload registration
-entries use precise selectors, and why network policies / pod security contexts matter in
-production.
+still call the Workload API and receive a fresh SVID, and can access the in-memory key.
+This is why SPIRE workload registration entries use precise selectors, and why network
+policies / pod security contexts matter in production.
 
 ### Development simplifications in this demo
 
@@ -421,6 +472,7 @@ production.
 | DataStore | SQLite | PostgreSQL or MySQL for HA |
 | KeyManager | `memory` (keys lost on restart) | Cloud KMS (AWS KMS, GCP Cloud HSM) |
 | PID namespace | `pid: "service:spire-agent"` | Dedicated host agent (DaemonSet in k8s) |
+| EC key | In-memory only | HSM-backed key or TPM for higher assurance |
 
 ---
 
@@ -451,15 +503,27 @@ The socket is at `/tmp/spire-agent/public/api.sock` (shared volume `spire-agent-
 If the agent logs show `"could not resolve caller information"`, verify that
 `pid: "service:spire-agent"` is set on `spiffe-service` in `docker-compose.yml`.
 
-### `Keycloak returned 401: invalid_client` in the OAuth2 bridge step
+### `Keycloak returned 401: invalid_client` in the authentication step
 
-The `spiffe-service` Keycloak client is missing or its secret is wrong. Run:
+The `spiffe-service` Keycloak client may be missing or misconfigured. Run:
 
 ```bash
-docker compose up keycloak-init
+docker compose run --rm keycloak-init
 ```
 
-This will create the client and assign the `user-role` to its service account.
+This will create or migrate the client to use `client-jwt` authentication and assign the
+`user-role` to its service account.
+
+### `Keycloak returned 400: invalid_token_audience` or `aud` mismatch
+
+The `aud` in the `client_assertion` must match Keycloak's *public* token endpoint URL
+(as published in `/.well-known/openid-configuration`), not the internal Docker hostname.
+`spiffe-service` discovers this at startup via OIDC discovery. If Keycloak was unreachable
+at startup, the service fell back to the internal URL. Restart `spiffe-service`:
+
+```bash
+docker compose restart spiffe-service
+```
 
 ### SPIRE agent stuck waiting for join token
 
@@ -471,8 +535,11 @@ docker compose logs spire-init
 
 A common cause is that `spire-server` was not yet healthy when `spire-init` ran, but the
 `depends_on: service_healthy` in `docker-compose.yml` should prevent this. If `spire-init`
-shows `"SPIRE server did not become ready in time"`, the server may need more time — restart
-with `docker compose up spire-server spire-init`.
+shows `"SPIRE server did not become ready in time"`, restart with:
+
+```bash
+docker compose up spire-server spire-init
+```
 
 ### Everything starts slowly on first run
 

@@ -6,7 +6,7 @@
 
 Keycloak is the **Identity Provider (IdP)** and **Authorisation Server**.
 
-Version: **26.0** (`quay.io/keycloak/keycloak:26.0`)
+Version: **26.6.1** (`quay.io/keycloak/keycloak:26.6.1`)
 
 Responsibilities:
 - Authenticates users (login form, MFA, social login, etc.)
@@ -14,7 +14,7 @@ Responsibilities:
 - Manages users, roles, clients, and realms
 - Exposes a JWKS endpoint so resource servers can verify token signatures
 - Handles token refresh and SSO session management
-- Supports RFC 8693 token exchange (enabled via `KC_FEATURES=preview`)
+- Supports RFC 8693 Standard Token Exchange (GA in KC 26.2+ — no feature flags required)
 - Enforces DPoP proof-of-possession (RFC 9449) on `dpop-client`
 - Implements Device Authorization Grant (RFC 8628) on `device-client`
 - Enforces PKCE (RFC 7636) S256 on `pkce-client`
@@ -42,7 +42,7 @@ Clients registered in the `demo` realm:
 | `demo-client` | Auth Code + Password | Browser login and ROPC testing; confidential |
 | `service-client` | Client Credentials | Machine-to-machine demo; confidential |
 | `middle-tier-client` | Client Credentials | On-Behalf-Of / rescoping actor; confidential |
-| `spiffe-service` | Client Credentials | SPIFFE→OAuth2 bridge service account; confidential |
+| `spiffe-service` | Client Credentials | RFC 7523 private_key_jwt workload identity; **no secret** |
 | `dpop-client` | Password Grant | DPoP enforcement (`dpop.bound.access.tokens: true`); confidential |
 | `device-client` | Device Authorization Grant | RFC 8628 browserless flow; confidential |
 | `pkce-client` | Authorization Code | PKCE S256 enforcement; **public** (no secret) |
@@ -53,11 +53,11 @@ A Python container (`keycloak-init/setup.py`) that runs once after Keycloak beco
 then exits. It configures things that cannot be expressed in `realm-export.json` or that must
 survive volume resets:
 
-1. **Fine-grained token-exchange permissions** — enables `middle-tier-client` to perform
-   On-Behalf-Of exchanges against `demo-client` tokens (Steps 2–5 in the OBO manual guide).
-2. **`spiffe-service` client provisioning** — creates the client and assigns `user-role` to
-   its service account. Required because Keycloak only imports `realm-export.json` on first
-   boot; subsequent runs skip re-import.
+1. **Standard Token Exchange** — sets `standard.token.exchange.enabled = true` on
+   `middle-tier-client`, enabling On-Behalf-Of and rescoping exchanges (KC 26.2+ GA).
+2. **`spiffe-service` client provisioning** — creates or migrates the client to use
+   `client-jwt` authentication (`clientAuthenticatorType = "client-jwt"`, JWKS URL pointing
+   to `http://spiffe-service:8002/jwks`), and assigns `user-role` to its service account.
 3. **`dpop-client` provisioning** — creates the DPoP-enforced client with the
    `dpop.bound.access.tokens: true` attribute.
 4. **`device-client` provisioning** — creates the Device Authorization Grant client with the
@@ -110,6 +110,18 @@ Responsibilities:
 A **FastAPI** workload that demonstrates machine identity via **SPIFFE/SPIRE** instead
 of static secrets. See [spiffe-oauth2.md](spiffe-oauth2.md) for a full explanation.
 
+The service exposes both a JSON API and a Bootstrap HTML UI:
+
+| Path | Returns | Purpose |
+|------|---------|---------|
+| `GET /ui` | HTML | Service home — config, flow diagram, endpoint reference |
+| `GET /ui/demo` | HTML | Interactive demo runner (calls `/demo` via AJAX, renders results inline) |
+| `GET /` | JSON | Service info (API) |
+| `GET /jwks` | JSON | Public JWKS — Keycloak fetches this to validate `client_assertion` |
+| `GET /svid` | JSON | Raw JWT-SVID claims from SPIRE (inspection) |
+| `GET /demo` | JSON | Full 4-step demo (workload attestation → private_key_jwt → resource API) |
+| `GET /docs` | HTML | FastAPI / Swagger UI |
+
 ### SPIRE Server
 
 The SPIRE **Certificate Authority and registry**. Stores workload registration entries
@@ -154,7 +166,7 @@ Internal Docker network (oauth2-net):
   oauth2-keycloak ─────────────────────────▶ oauth2-postgres:5432
   oauth2-keycloak-init ───────────────────▶ oauth2-keycloak:8080        (Admin API)
   oauth2-keycloak-init ───────────────────▶ oauth2-keycloak:9000        (health/ready)
-  oauth2-spiffe-service ──────────────────▶ oauth2-keycloak:8080        (token bridge)
+  oauth2-spiffe-service ──────────────────▶ oauth2-keycloak:8080        (private_key_jwt auth + /jwks fetch)
   oauth2-spiffe-service ──────────────────▶ oauth2-resource-server:8001 (API calls)
   oauth2-spire-agent ─────────────────────▶ oauth2-spire-server:8081    (node attestation)
 
