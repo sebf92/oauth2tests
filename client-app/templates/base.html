@@ -60,20 +60,31 @@
         <li class="nav-item"><a class="nav-link" href="/token/inspect"><i class="bi bi-search me-1"></i>Token Inspector</a></li>
         {% endif %}
         <li class="nav-item"><a class="nav-link" href="/docs"><i class="bi bi-book me-1"></i>Docs</a></li>
-        <li class="nav-item">
-          <a class="nav-link" href="http://localhost:8002/ui" target="_blank">
-            <i class="bi bi-fingerprint text-info me-1"></i>SPIFFE Service <i class="bi bi-box-arrow-up-right ms-1" style="font-size:.7rem"></i>
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle" href="#" data-bs-toggle="dropdown">
+            <i class="bi bi-grid me-1"></i>Tools
           </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="{{ keycloak_url }}/realms/{{ realm }}/account" target="_blank">
-            <i class="bi bi-person-circle me-1"></i>Keycloak Account <i class="bi bi-box-arrow-up-right" style="font-size:.7rem"></i>
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="{{ keycloak_url }}/admin/{{ realm }}/console" target="_blank">
-            <i class="bi bi-gear me-1"></i>Admin Console <i class="bi bi-box-arrow-up-right" style="font-size:.7rem"></i>
-          </a>
+          <ul class="dropdown-menu dropdown-menu-dark">
+            <li>
+              <a class="dropdown-item" href="http://localhost:8002/ui" target="_blank">
+                <i class="bi bi-fingerprint text-info me-2"></i>SPIFFE Service
+                <i class="bi bi-box-arrow-up-right ms-1 text-muted" style="font-size:.65rem"></i>
+              </a>
+            </li>
+            <li><hr class="dropdown-divider"></li>
+            <li>
+              <a class="dropdown-item" href="{{ keycloak_url }}/realms/{{ realm }}/account" target="_blank">
+                <i class="bi bi-person-circle me-2"></i>Keycloak Account
+                <i class="bi bi-box-arrow-up-right ms-1 text-muted" style="font-size:.65rem"></i>
+              </a>
+            </li>
+            <li>
+              <a class="dropdown-item" href="{{ keycloak_url }}/admin/{{ realm }}/console" target="_blank">
+                <i class="bi bi-gear me-2"></i>Admin Console
+                <i class="bi bi-box-arrow-up-right ms-1 text-muted" style="font-size:.65rem"></i>
+              </a>
+            </li>
+          </ul>
         </li>
       </ul>
       <div class="d-flex align-items-center gap-2">
