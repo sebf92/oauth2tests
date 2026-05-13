@@ -62,7 +62,10 @@
       "Bash(docker pull *)",
       "Bash(curl -s http://localhost:8002/)",
       "Bash(curl -s http://localhost:8002/jwks)",
-      "mcp__Desktop_Commander__read_file"
+      "mcp__Desktop_Commander__read_file",
+      "Bash(grep -n \"^[^|].*[^|]$\" \"R:/python/oauth2sample/docs/oauth2-flows.md\" \"R:/python/oauth2sample/docs/architecture.md\" \"R:/python/oauth2sample/docs/spiffe-oauth2.md\" \"R:/python/oauth2sample/docs/obo-manual-setup.md\")",
+      "Bash(awk 'NR%2==1{prev=$0; next} /^\\\\|/{print prev}')",
+      "Bash(python3 -c ' *)"
     ]
   }
 }

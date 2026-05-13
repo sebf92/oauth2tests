@@ -7,6 +7,7 @@ It defines how an application can obtain limited access to a resource on behalf 
 (or on its own behalf) without sharing the user's credentials.
 
 Key actors:
+
 | Role | In this demo |
 |---|---|
 | **Resource Owner** | The human user (alice, bob, charlie) |
