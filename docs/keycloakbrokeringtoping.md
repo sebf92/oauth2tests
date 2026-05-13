@@ -1,6 +1,19 @@
 # Keycloak as Idp and OAuthz server
 
-This diagram shows how Keycloak can act as both an Idp and an Authorization server to issue tokens to the application.
+The diagram below shows how Keycloak can act as both an Idp and an Authorization server to issue tokens to the application.
+
+At a glance:
+
+1. The user navigates to the application and requests a protected resource while not yet authenticated.
+2. The application detects that there is no valid session or access token and redirects the user’s browser to Keycloak’s authorization endpoint, passing its client ID, redirect URI, requested scopes, state, and nonce.
+3. Keycloak presents its login page to the user and, if configured, any MFA challenges, then validates the submitted credentials and completes its authentication flow.
+4. Once authentication succeeds, Keycloak creates an SSO session for the user and redirects the browser back to the application’s redirect URI with an authorization code and the original state value.
+5. The application receives the authorization code and sends a back‑channel request to Keycloak’s token endpoint, including the code, redirect URI, client credentials, and grant type set to authorization_code.
+6. Keycloak validates the client, the authorization code, and the redirect URI, then issues an access token, an ID token, and optionally a refresh token, all signed by Keycloak.
+7. The application stores the tokens and calls the protected API, sending the access token in the Authorization header as a Bearer token.
+8. The API validates the access token using Keycloak’s public keys and checks claims such as issuer, audience, expiry, scopes, and roles before returning the protected resource to the application.
+9. Finally, the application returns the requested content to the user, who is now authenticated by Keycloak and authorized via the Keycloak-issued access token.
+
 
 ```mermaid
 sequenceDiagram
@@ -45,6 +58,15 @@ sequenceDiagram
 
 This diagram shows how Keycloak delegates login to Ping and then issues its own tokens to the application.
 
+At a glance:
+
+1. The user accesses a protected resource in the application without an existing session or token, triggering an OpenID Connect authorization request to Keycloak.
+2. The application redirects the browser to Keycloak’s authorization endpoint, asking Keycloak to authenticate the user and later issue tokens back to the application.
+3. Keycloak detects that the user is not yet authenticated locally and, based on its identity brokering configuration, redirects the browser to Ping as the upstream OIDC identity provider.
+4. The user authenticates with Ping (including MFA and any risk policies), and Ping sends the browser back to Keycloak with an authorization code representing the successful authentication.
+5. Keycloak exchanges this code with Ping over a back‑channel, validates the returned tokens, maps Ping attributes to a local user (creating or linking as needed), and establishes a Keycloak SSO session.
+6. Keycloak then completes the outer OIDC flow by redirecting the browser back to the application with a Keycloak authorization code, which the application exchanges for Keycloak‑issued tokens (access, ID, and optional refresh tokens).
+7. The application calls APIs using the Keycloak access token, and APIs validate and authorize requests based solely on Keycloak tokens, remaining unaware of Ping’s involvement.
 
 ### Actors
 
@@ -106,7 +128,7 @@ sequenceDiagram
 
 ***
 
-### Sequence diagram (textual)
+### Detailed Sequence
 
 1. **User → Application**
     - Request: Accesses a protected URL at the application (no session or token yet).
