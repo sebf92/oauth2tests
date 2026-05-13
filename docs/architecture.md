@@ -151,29 +151,42 @@ Not accessed directly by the Python applications.
 
 ## Network topology
 
-```
-Host machine
-├── localhost:5000  → oauth2-client-app
-├── localhost:8001  → oauth2-resource-server
-├── localhost:8002  → oauth2-spiffe-service
-└── localhost:8080  → oauth2-keycloak
+```mermaid
+graph TB
+    subgraph Host["Host Machine (port bindings)"]
+        P5000["localhost:5000"]
+        P8001["localhost:8001"]
+        P8002["localhost:8002"]
+        P8080["localhost:8080"]
+    end
 
-Internal Docker network (oauth2-net):
-  oauth2-client-app ──────────────────────▶ oauth2-keycloak:8080       (token exchange)
-  oauth2-client-app ──────────────────────▶ oauth2-resource-server:8001 (API calls)
-  oauth2-client-app ──────────────────────▶ oauth2-spiffe-service:8002  (SPIFFE proxy)
-  oauth2-resource-server ─────────────────▶ oauth2-keycloak:8080        (JWKS fetch)
-  oauth2-keycloak ─────────────────────────▶ oauth2-postgres:5432
-  oauth2-keycloak-init ───────────────────▶ oauth2-keycloak:8080        (Admin API)
-  oauth2-keycloak-init ───────────────────▶ oauth2-keycloak:9000        (health/ready)
-  oauth2-spiffe-service ──────────────────▶ oauth2-keycloak:8080        (private_key_jwt auth + /jwks fetch)
-  oauth2-spiffe-service ──────────────────▶ oauth2-resource-server:8001 (API calls)
-  oauth2-spire-agent ─────────────────────▶ oauth2-spire-server:8081    (node attestation)
+    subgraph Docker["Docker Network — oauth2-net"]
+        CA["client-app"]
+        RS["resource-server"]
+        SS["spiffe-service"]
+        KC["keycloak :8080"]
+        KC9["keycloak :9000"]
+        PG["postgres :5432"]
+        KI["keycloak-init"]
+        SA["spire-agent"]
+        SV["spire-server :8081"]
+    end
 
-Shared unix sockets (Docker named volumes):
-  spire-server-socket: spire-server ↔ spire-init   (admin API)
-  spire-agent-socket:  spire-agent  ↔ spiffe-service (Workload API)
-  spire-tokens:        spire-init → spire-agent       (join token hand-off)
+    P5000 -.- CA
+    P8001 -.- RS
+    P8002 -.- SS
+    P8080 -.- KC
+
+    CA -->|"token exchange"| KC
+    CA -->|"API calls"| RS
+    CA -->|"SPIFFE proxy"| SS
+    RS -->|"JWKS fetch"| KC
+    KC --> PG
+    KI -->|"Admin API"| KC
+    KI -->|"health / ready"| KC9
+    SS -->|"private_key_jwt"| KC
+    SS -->|"API calls"| RS
+    SA -->|"node attestation"| SV
 ```
 
 **Important:** the browser uses `localhost:8080` to reach Keycloak (via port mapping).
@@ -184,52 +197,33 @@ Server-to-server calls inside Docker use the container name `keycloak:8080`.
 
 ## Token flow — Authorization Code
 
-```
-User                  Client App              Keycloak              Resource Server
- │                        │                      │                        │
- │  GET /                 │                      │                        │
- │───────────────────────▶│                      │                        │
- │                        │                      │                        │
- │  Click "Login"         │                      │                        │
- │───────────────────────▶│                      │                        │
- │                        │  Build auth URL      │                        │
- │                        │  + state, nonce      │                        │
- │◀───────────────────────│  302 Redirect        │                        │
- │                        │                      │                        │
- │  GET /auth?...         │                      │                        │
- │──────────────────────────────────────────────▶│                        │
- │◀──────────────────────────────────────────────│  Login page            │
- │  POST credentials      │                      │                        │
- │──────────────────────────────────────────────▶│                        │
- │◀──────────────────────────────────────────────│  302 /callback?code=X  │
- │                        │                      │                        │
- │  GET /callback?code=X  │                      │                        │
- │───────────────────────▶│                      │                        │
- │                        │  POST /token         │                        │
- │                        │  grant_type=auth_code│                        │
- │                        │  code=X              │                        │
- │                        │──────────────────────▶                        │
- │                        │◀──────────────────────  {access_token,        │
- │                        │                      │   id_token,            │
- │                        │                      │   refresh_token}       │
- │                        │  Store in session    │                        │
- │◀───────────────────────│  302 /               │                        │
- │                        │                      │                        │
- │  Click "Call API"      │                      │                        │
- │───────────────────────▶│                      │                        │
- │                        │  GET /api/products   │                        │
- │                        │  Authorization: Bearer <token>                │
- │                        │───────────────────────────────────────────────▶
- │                        │                      │  GET /certs (JWKS)     │
- │                        │                      │◀───────────────────────│
- │                        │                      │──────────────────────▶ │
- │                        │                      │  {keys}                │
- │                        │                      │◀──────────────────────-│
- │                        │                      │  Verify signature      │
- │                        │                      │  Check exp, iss, roles │
- │                        │◀───────────────────────────────────────────────
- │                        │                      │  200 {products}        │
- │◀───────────────────────│                      │                        │
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant App as Client App
+    participant KC as Keycloak
+    participant API as Resource Server
+
+    User->>App: GET /
+    User->>App: Click "Login"
+    App->>User: 302 Redirect to Keycloak (auth URL + state, nonce)
+    User->>KC: GET /auth?client_id=demo-client&response_type=code&...
+    KC->>User: Login page
+    User->>KC: POST credentials
+    KC->>User: 302 /callback?code=X
+    User->>App: GET /callback?code=X&state=Y
+    App->>KC: POST /token (grant_type=authorization_code, code=X, client_secret)
+    KC-->>App: access_token, id_token, refresh_token
+    App->>App: Store tokens in session
+    App->>User: 302 /
+    User->>App: Click "Call API"
+    App->>API: GET /api/products (Authorization: Bearer token)
+    API->>KC: GET /certs (JWKS)
+    KC-->>API: public keys
+    API->>API: Verify signature, check exp / iss / roles
+    API-->>App: 200 {products}
+    App-->>User: Show products
 ```
 
 ---

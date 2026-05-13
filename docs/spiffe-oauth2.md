@@ -92,28 +92,16 @@ This demo uses the **unix attestor** with `unix:uid:0` (root inside the containe
 
 ## SPIRE Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Docker Compose network (oauth2-net)                              │
-│                                                                  │
-│  ┌──────────────┐   gRPC :8081   ┌──────────────┐               │
-│  │ spire-server │◄───────────────│ spire-agent  │               │
-│  │              │                │              │               │
-│  │ • CA / signer│   node attest  │ • unix socket│               │
-│  │ • registry   │                │   /tmp/spire-│               │
-│  │ • join tokens│                │   agent/...  │               │
-│  └──────────────┘                └──────┬───────┘               │
-│                                         │ Workload API           │
-│                                         │ (unix socket)          │
-│                                   ┌─────▼──────────┐            │
-│                                   │ spiffe-service │            │
-│                                   │ (shared PID ns)│            │
-│                                   │ 1. fetch SVID  │            │
-│                                   │ 2. private_key │            │
-│                                   │    _jwt → KC   │            │
-│                                   │ 3. call API    │            │
-│                                   └────────────────┘            │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Docker["Docker Compose Network (oauth2-net)"]
+        SS["spire-server<br/>● CA / signer<br/>● registry<br/>● join tokens"]
+        SA["spire-agent<br/>● Workload API<br/>● unix socket"]
+        SP["spiffe-service<br/>(shared PID namespace)<br/>1. fetch SVID<br/>2. private_key_jwt to KC<br/>3. call API"]
+    end
+
+    SS <-->|"gRPC :8081 / node attestation"| SA
+    SA -->|"Workload API (unix socket)"| SP
 ```
 
 ### Bootstrap Sequence
@@ -181,37 +169,26 @@ The key idea: instead of a static secret, `spiffe-service` generates an **epheme
 key pair** at process startup, exposes the public key via `GET /jwks`, and signs short-lived
 JWT assertions with the private key. Keycloak validates those assertions by fetching `/jwks`.
 
-```
-spiffe-service              SPIRE                Keycloak           Resource Server
-      │                       │                      │                    │
-      │ startup: generate      │                      │                    │
-      │ EC key pair in memory  │                      │                    │
-      │ expose GET /jwks ──────┼──────────────────────┼──────────►(KC fetches on demand)
-      │                       │                      │                    │
-      │ fetch_jwt_svids()      │                      │                    │
-      ├──────────────────────►│                      │                    │
-      │◄── JWT-SVID ──────────│                      │                    │
-      │    (ES256, ~5 min)    │                      │                    │
-      │                       │                      │                    │
-      │ build client_assertion│                      │                    │
-      │ JWT (RFC 7523):        │                      │                    │
-      │   iss/sub = SVC_ID    │                      │                    │
-      │   aud = token endpoint │                      │                    │
-      │   signed with EC key  │                      │                    │
-      │                       │                      │                    │
-      │ POST /token            │                      │                    │
-      │ grant_type=client_cred │                      │                    │
-      │ client_assertion=<JWT>│                      │                    │
-      ├───────────────────────┼─────────────────────►│                    │
-      │                       │                      │ fetch GET /jwks    │
-      │                       │                      │◄─────────────────── │
-      │                       │                      │ verify ES256 sig   │
-      │◄──────────────────────┼── access_token ──────│                    │
-      │                       │                      │                    │
-      │ GET /api/products      │                      │                    │
-      │ Authorization: Bearer  │                      │                    │
-      ├───────────────────────┼──────────────────────┼───────────────────►│
-      │◄────────────────────────────────────────── 200 OK ────────────────│
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SVC as spiffe-service
+    participant SPIRE as SPIRE
+    participant KC as Keycloak
+    participant API as Resource Server
+
+    SVC->>SVC: Startup: generate EC key pair in memory, expose GET /jwks
+    Note over KC: KC fetches /jwks on demand
+    SVC->>SPIRE: fetch_jwt_svids()
+    SPIRE-->>SVC: JWT-SVID (ES256, ~5 min TTL)
+    SVC->>SVC: Build client_assertion JWT (RFC 7523): iss/sub=SVC_ID, aud=token_endpoint, signed with EC key
+    SVC->>KC: POST /token (grant_type=client_credentials, client_assertion=JWT)
+    KC->>SVC: GET /jwks
+    SVC-->>KC: JWKS (public key)
+    KC->>KC: Verify ES256 signature
+    KC-->>SVC: access_token
+    SVC->>API: GET /api/products (Authorization: Bearer)
+    API-->>SVC: 200 OK
 ```
 
 ### Why the JWT-SVID is not used directly as the client_assertion
@@ -353,42 +330,28 @@ Keycloak fetches `GET /jwks` on `spiffe-service` to verify the ES256 signature.
 
 ## Step-by-Step Flow
 
-```
-spiffe-service             SPIRE agent           Keycloak          Resource Server
-      │                        │                     │                    │
-      │  startup: EC key pair  │                     │                    │
-      │  generated in memory   │                     │                    │
-      │  GET /jwks exposed ────┼─────────────────────┼──────────► (fetched on-demand)
-      │                        │                     │                    │
-      │  WorkloadApiClient     │                     │                    │
-      │  fetch_jwt_svids(aud)  │                     │                    │
-      ├───────────────────────►│                     │                    │
-      │                        │  (check unix:uid:0) │                    │
-      │                        │  (validate entry)   │                    │
-      │◄── JWT-SVID ───────────│                     │                    │
-      │    (ES256, ~5 min TTL) │                     │                    │
-      │                        │                     │                    │
-      │  build client_assertion│                     │                    │
-      │  RFC 7523 JWT:         │                     │                    │
-      │  iss/sub=spiffe-service│                     │                    │
-      │  aud=token_endpoint    │                     │                    │
-      │  signed with EC privkey│                     │                    │
-      │                        │                     │                    │
-      │  POST /token           │                     │                    │
-      │  grant_type=           │                     │                    │
-      │    client_credentials  │                     │                    │
-      │  client_assertion=JWT  │                     │                    │
-      ├────────────────────────┼────────────────────►│                    │
-      │                        │                     │ GET /jwks          │
-      │                        │                     │◄────────────────── │
-      │                        │                     │ verify ES256 sig   │
-      │◄────────────────────── access_token ─────────│                    │
-      │                        │                     │                    │
-      │  GET /api/products     │                     │                    │
-      │  Authorization: Bearer │                     │                    │
-      ├────────────────────────┼─────────────────────┼───────────────────►│
-      │                        │                     │                    │  validate JWT
-      │◄──────────────────────────────────────── 200 OK ─────────────────│
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SVC as spiffe-service
+    participant SA as SPIRE agent
+    participant KC as Keycloak
+    participant API as Resource Server
+
+    SVC->>SVC: Startup: EC key pair generated in memory, GET /jwks exposed
+    Note over KC: KC fetches /jwks on demand
+    SVC->>SA: WorkloadApiClient fetch_jwt_svids(aud)
+    Note over SA: check unix:uid:0, validate workload entry
+    SA-->>SVC: JWT-SVID (ES256, ~5 min TTL)
+    SVC->>SVC: Build client_assertion (RFC 7523 JWT): iss/sub=spiffe-service, aud=token_endpoint, signed with EC privkey
+    SVC->>KC: POST /token (grant_type=client_credentials, client_assertion=JWT)
+    KC->>SVC: GET /jwks
+    SVC-->>KC: JWKS
+    KC->>KC: Verify ES256 signature
+    KC-->>SVC: access_token
+    SVC->>API: GET /api/products (Authorization: Bearer)
+    API->>API: Validate JWT
+    API-->>SVC: 200 OK
 ```
 
 ---
@@ -403,21 +366,19 @@ With older Keycloak versions (pre-26.4), the service could not authenticate to K
 the JWT-SVID directly. The workaround was a "bridge": look up the Keycloak client credentials
 from a local mapping table indexed by SPIFFE ID, then use those credentials to obtain a token.
 
-```
-spiffe-service                     Keycloak
-      │                                │
-      │  1. fetch_jwt_svids()          │
-      │◄──── SPIRE (JWT-SVID) ─────────┤
-      │                                │
-      │  2. validate SPIFFE ID locally │
-      │     look up in SPIFFE_CLIENT_MAP
-      │                                │
-      │  3. POST /token                │
-      │     grant_type=client_cred.    │
-      │     client_id=spiffe-service   │
-      │     client_secret=...  ────────► validate secret
-      │                                │
-      │◄────── access_token ───────────│
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SVC as spiffe-service
+    participant SPIRE as SPIRE
+    participant KC as Keycloak
+
+    SVC->>SPIRE: 1. fetch_jwt_svids()
+    SPIRE-->>SVC: JWT-SVID
+    SVC->>SVC: 2. Validate SPIFFE ID locally, look up client_id/secret in SPIFFE_CLIENT_MAP
+    SVC->>KC: 3. POST /token (grant_type=client_credentials, client_id=spiffe-service, client_secret)
+    KC->>KC: Validate secret
+    KC-->>SVC: access_token
 ```
 
 The bridge table in `spiffe-service/main.py`:

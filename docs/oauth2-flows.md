@@ -39,41 +39,26 @@ This demo implements **eleven flows** across four categories:
 
 ### Flow diagram
 
-```
-Client App                 Keycloak                  Browser
-    │                          │                          │
-    │◀─── User clicks Login ───────────────────────────── │
-    │                          │                          │
-    │ Build auth URL           │                          │
-    │ ?response_type=code      │                          │
-    │ &client_id=demo-client   │                          │
-    │ &redirect_uri=...        │                          │
-    │ &scope=openid profile    │                          │
-    │ &state=<random>          │                          │
-    │ &nonce=<random>          │                          │
-    │ ──────────────────────────────────────────────────▶ │
-    │              302 Redirect to Keycloak login page    │
-    │                          │◀────────────────────── GET│
-    │                          │ ──────────────────────▶  │
-    │                          │    Login form             │
-    │                          │◀── POST credentials ──── │
-    │                          │                          │
-    │                          │ Validate credentials      │
-    │                          │ Generate auth code        │
-    │                          │ ──── 302 /callback ─────▶ │
-    │◀─────────────────── GET /callback?code=X&state=Y ── │
-    │                          │                          │
-    │ Verify state == session  │                          │
-    │ POST /token              │                          │
-    │   grant_type=authorization_code                     │
-    │   code=X                 │                          │
-    │   client_secret=***      │                          │
-    │ ────────────────────────▶│                          │
-    │◀─── {access_token, id_token, refresh_token} ────── │
-    │                          │                          │
-    │ Store tokens in session  │                          │
-    │ ──────────────────────────────────────────────────▶ │
-    │              200 Home page (user is logged in)      │
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Browser / User
+    participant App as Client App
+    participant KC as Keycloak
+
+    User->>App: Click Login
+    App->>User: 302 Redirect (response_type=code, client_id=demo-client, scope=openid profile, state, nonce)
+    User->>KC: GET /auth?...
+    KC->>User: Login form
+    User->>KC: POST credentials
+    KC->>KC: Validate credentials, generate auth code
+    KC->>User: 302 /callback?code=X&state=Y
+    User->>App: GET /callback?code=X&state=Y
+    App->>App: Verify state == session
+    App->>KC: POST /token (grant_type=authorization_code, code=X, client_secret)
+    KC-->>App: access_token, id_token, refresh_token
+    App->>App: Store tokens in session
+    App-->>User: 200 Home page (user is logged in)
 ```
 
 ### What gets exchanged
@@ -130,17 +115,14 @@ grant_type=authorization_code
 
 ### Flow
 
-```
-Client App               Keycloak
-    │                        │
-    │ POST /token            │
-    │   grant_type=password  │
-    │   username=alice       │
-    │   password=alice123    │
-    │   client_id=...        │
-    │   client_secret=...    │
-    │ ──────────────────────▶│
-    │◀── {access_token, ...} │
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Client App
+    participant KC as Keycloak
+
+    App->>KC: POST /token (grant_type=password, username=alice, password=alice123, client_id, client_secret)
+    KC-->>App: access_token, id_token, refresh_token
 ```
 
 ### Request
@@ -172,23 +154,17 @@ grant_type=password
 
 ### Flow
 
-```
-Service A                Keycloak               Service B (resource server)
-    │                        │                          │
-    │ POST /token            │                          │
-    │   grant_type=          │                          │
-    │     client_credentials │                          │
-    │   client_id=           │                          │
-    │     service-client     │                          │
-    │   client_secret=***    │                          │
-    │ ──────────────────────▶│                          │
-    │◀── {access_token}      │                          │
-    │                        │                          │
-    │ GET /api/products      │                          │
-    │ Authorization: Bearer <token>                     │
-    │ ──────────────────────────────────────────────────▶
-    │◀───────────────────────────────────────────────── │
-    │                      200 {products}               │
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Service A
+    participant KC as Keycloak
+    participant B as Resource Server
+
+    A->>KC: POST /token (grant_type=client_credentials, client_id=service-client, client_secret)
+    KC-->>A: access_token
+    A->>B: GET /api/products (Authorization: Bearer token)
+    B-->>A: 200 {products}
 ```
 
 ### Request
@@ -231,27 +207,19 @@ preserving the user's identity in the delegated token while the acting client ch
 
 ### Flow
 
-```
-User (Alice)           Client App          middle-tier-client        Keycloak
-     │                     │                       │                     │
-     │  Login (Auth Code)  │                       │                     │
-     │────────────────────▶│                       │                     │
-     │◀─── access_token ───│                       │                     │
-     │   (sub=alice,       │                       │                     │
-     │    aud=[demo-client, │                       │                     │
-     │    middle-tier-client])                      │                     │
-     │                     │                       │                     │
-     │  Request OBO        │                       │                     │
-     │────────────────────▶│                       │                     │
-     │                     │  POST /token          │                     │
-     │                     │  grant_type=token-exchange                  │
-     │                     │  subject_token=<alice's token>              │
-     │                     │  actor=middle-tier-client                   │
-     │                     │  client_secret=***    │                     │
-     │                     │──────────────────────────────────────────▶  │
-     │                     │◀────────── delegated access_token ──────────│
-     │                     │  (sub=alice, azp=middle-tier-client)        │
-     │◀────────────────────│                       │                     │
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as User (Alice)
+    participant App as Client App
+    participant KC as Keycloak
+
+    Alice->>App: Login (Auth Code flow)
+    App-->>Alice: access_token (sub=alice, aud=[demo-client, middle-tier-client])
+    Alice->>App: Request On-Behalf-Of
+    App->>KC: POST /token (grant_type=urn:ietf:params:oauth:grant-type:token-exchange, subject_token=alice_token, client_id=middle-tier-client, client_secret)
+    KC-->>App: delegated access_token (sub=alice, azp=middle-tier-client, act.sub=middle-tier-client)
+    App-->>Alice: Delegated token
 ```
 
 ### Request
@@ -363,35 +331,21 @@ DPoP binds the token to an ephemeral key pair — the token is useless without t
 
 ### How DPoP works
 
-```
-Client                               Keycloak
-  │                                      │
-  │  1. Generate ephemeral EC P-256 key  │
-  │     compute JWK thumbprint (jkt)     │
-  │                                      │
-  │  2. Build DPoP proof JWT:            │
-  │     { htu, htm, iat, jti }           │
-  │     signed with private key          │
-  │                                      │
-  │  POST /token                         │
-  │  DPoP: <proof JWT>                   │
-  │  grant_type=password                 │
-  │  client_id=dpop-client               │
-  │──────────────────────────────────────▶
-  │◀── access_token                      │
-  │    token_type: DPoP                  │
-  │    cnf.jkt: <thumbprint>             │
-  │                                      │
-  │  3. Build second proof for API call  │
-  │     includes ath (access token hash) │
-  │                                      │
-  │  GET /api/dpop-protected             │
-  │  Authorization: DPoP <access_token>  │
-  │  DPoP: <proof JWT #2>                │
-  │──────────────────────────────────────────────────────▶ Resource Server
-  │                                                         verifies cnf.jkt
-  │                                                         verifies proof sig
-  │◀────────────────────────────────────────────────────── 200 OK
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant KC as Keycloak
+    participant API as Resource Server
+
+    C->>C: 1. Generate ephemeral EC P-256 key, compute JWK thumbprint (jkt)
+    C->>C: 2. Build DPoP proof JWT (htu, htm, iat, jti) signed with private key
+    C->>KC: POST /token (DPoP: proof JWT, grant_type=password, client_id=dpop-client)
+    KC-->>C: access_token (token_type=DPoP, cnf.jkt=thumbprint)
+    C->>C: 3. Build second DPoP proof for API call (includes ath: access token hash)
+    C->>API: GET /api/dpop-protected (Authorization: DPoP access_token, DPoP: proof JWT 2)
+    API->>API: Verify cnf.jkt, verify proof signature
+    API-->>C: 200 OK
 ```
 
 ### Key fields in the DPoP proof JWT
@@ -432,33 +386,23 @@ or handle redirects.
 
 ### Flow
 
-```
-Device                    Keycloak              User's Browser
-  │                           │                       │
-  │ POST /auth/device         │                       │
-  │   client_id=device-client │                       │
-  │   client_secret=...       │                       │
-  │──────────────────────────▶│                       │
-  │◀── {device_code,          │                       │
-  │     user_code: XXXX-YYYY, │                       │
-  │     verification_uri,     │                       │
-  │     expires_in, interval} │                       │
-  │                           │                       │
-  │ display user_code         │                       │
-  │ to user                   │                       │
-  │                           │  User opens           │
-  │                           │  verification_uri ────▶
-  │                           │  enters XXXX-YYYY     │
-  │                           │  logs in              │
-  │                           │◀──────────────────────│
-  │                           │  grants consent       │
-  │                           │◀──────────────────────│
-  │                           │                       │
-  │ POST /token (polling)     │                       │
-  │   grant_type=device_code  │                       │
-  │   device_code=...         │                       │
-  │──────────────────────────▶│                       │
-  │◀── {access_token, ...}    │ (after user approves) │
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Dev as Device
+    participant KC as Keycloak
+    actor User as User's Browser
+
+    Dev->>KC: POST /auth/device (client_id=device-client, client_secret)
+    KC-->>Dev: device_code, user_code (XXXX-YYYY), verification_uri, expires_in, interval
+    Dev->>User: Display user_code
+    User->>KC: Open verification_uri, enter XXXX-YYYY
+    User->>KC: Login and grant consent
+    loop Polling every interval seconds
+        Dev->>KC: POST /token (grant_type=urn:ietf:params:oauth:grant-type:device_code, device_code)
+        KC-->>Dev: authorization_pending / slow_down / expired_token / access_denied
+    end
+    KC-->>Dev: access_token (after user approves)
 ```
 
 ### Error codes during polling
@@ -495,32 +439,19 @@ code_challenge = BASE64URL(SHA-256(ASCII(code_verifier)))
 
 ### Flow
 
-```
-Client (public)                    Keycloak
-    │                                  │
-    │ 1. Generate code_verifier        │
-    │    compute code_challenge        │
-    │                                  │
-    │ GET /auth                        │
-    │   response_type=code             │
-    │   client_id=pkce-client          │
-    │   code_challenge=<hash>          │
-    │   code_challenge_method=S256     │
-    │──────────────────────────────────▶
-    │    (Keycloak stores the challenge)
-    │◀── 302 /callback?code=X ─────────│
-    │                                  │
-    │ POST /token                      │
-    │   grant_type=authorization_code  │
-    │   code=X                         │
-    │   client_id=pkce-client          │
-    │   code_verifier=<original>       │
-    │   (no client_secret)             │
-    │──────────────────────────────────▶
-    │   Keycloak: SHA-256(verifier)    │
-    │             must match stored    │
-    │             challenge            │
-    │◀── {access_token, ...} ──────────│
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Client (public)
+    participant KC as Keycloak
+
+    App->>App: 1. Generate code_verifier (32 random bytes), compute code_challenge = BASE64URL(SHA-256(verifier))
+    App->>KC: GET /auth (response_type=code, client_id=pkce-client, code_challenge, code_challenge_method=S256)
+    Note over KC: Stores code_challenge for this flow
+    KC-->>App: 302 /callback?code=X
+    App->>KC: POST /token (grant_type=authorization_code, code=X, client_id=pkce-client, code_verifier, no client_secret)
+    Note over KC: SHA-256(verifier) must match stored challenge
+    KC-->>App: access_token, id_token
 ```
 
 The intercepting attacker who stole the authorization code does not know the `code_verifier`

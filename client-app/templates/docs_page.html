@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ doc.title }} — Docs{% endblock %}
+{% block container_class %}container-fluid px-4{% endblock %}
 
 {% block content %}
 
@@ -211,6 +212,21 @@
   margin: 2rem 0;
 }
 
+/* Mermaid diagrams */
+.doc-content .mermaid {
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: .5rem;
+  padding: 1.5rem 1rem;
+  margin: 1.5rem 0;
+  text-align: center;
+  overflow-x: auto;
+}
+.doc-content .mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* ── Breadcrumb ─────────────────────────────────────────────────────────────── */
 .docs-breadcrumb { font-size: .85rem; }
 </style>
@@ -255,7 +271,7 @@
   </div>
 
   {# ── Main content ─────────────────────────────────────────────────────────────── #}
-  <div class="col-lg-10 col-xl-7">
+  <div class="col-lg-10 col-xl-8">
 
     {# Mobile doc selector #}
     <div class="d-lg-none mb-3">
@@ -325,7 +341,7 @@
   </div>
 
   {# ── Right — Table of Contents ─────────────────────────────────────────────── #}
-  <div class="col-xl-3 d-none d-xl-block">
+  <div class="col-xl-2 d-none d-xl-block">
     {% if toc %}
     <div class="doc-toc-panel">
       <div class="toc-title"><i class="bi bi-list-nested me-1"></i>On this page</div>
@@ -336,4 +352,13 @@
 
 </div>{# /row #}
 
+{% endblock %}
+
+{% block scripts %}
+{% if 'class="mermaid"' in content %}
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });
+</script>
+{% endif %}
 {% endblock %}

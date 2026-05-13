@@ -50,7 +50,9 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
+import html as _html
 import markdown as _markdown
+import re as _re
 import requests
 from markupsafe import Markup
 from cryptography.hazmat.backends import default_backend
@@ -1089,6 +1091,15 @@ DOCS_MANIFEST = [
         "badge":       "How-To Guide",
         "description": "Step-by-step guide for manually configuring On-Behalf-Of token exchange in KC 26.2+",
     },
+    {
+        "slug":        "keycloak-brokering",
+        "file":        "keycloakbrokeringtoping.md",
+        "title":       "Keycloak → Ping Brokering",
+        "icon":        "bi-arrow-left-right",
+        "color":       "danger",
+        "badge":       "Identity Brokering",
+        "description": "How Keycloak brokers authentication to PingFederate / PingOne — sequence diagrams and 23-step flow walkthrough",
+    },
 ]
 
 # Generate Pygments CSS once at startup; injected into docs_page.html
@@ -1097,6 +1108,9 @@ try:
     _PYGMENTS_CSS = _HtmlFormatter(style="monokai").get_style_defs(".highlight")
 except Exception:
     _PYGMENTS_CSS = ""
+
+
+_MERMAID_FENCE_RE = _re.compile(r'```mermaid\s*\n(.*?)```', _re.DOTALL)
 
 
 def _render_doc(filename: str):
@@ -1111,6 +1125,12 @@ def _render_doc(filename: str):
                    f"Expected path: <code>{path}</code></p>"),
             Markup(""),
         )
+    # Convert mermaid fenced blocks to raw HTML divs before markdown processes them.
+    # Python-markdown passes block-level HTML through unchanged, so Mermaid.js
+    # on the client picks them up and renders the diagrams.
+    raw = _MERMAID_FENCE_RE.sub(
+        lambda m: f'<div class="mermaid">\n{_html.escape(m.group(1))}\n</div>', raw
+    )
     md = _markdown.Markdown(
         extensions=["tables", "fenced_code", "codehilite", "toc", "attr_list"],
         extension_configs={
