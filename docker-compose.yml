@@ -121,6 +121,7 @@ services:
       AGENT_SECRET_URL: http://agent-secret:9001
       AGENT_SPIFFE_URL: http://agent-spiffe:9002
       AGENT_CERT_URL: http://agent-cert:9003
+      AGENT_DELEGATED_URL: http://agent-delegated:9004
       REDIRECT_URI: http://localhost:5000/auth/callback
       SECRET_KEY: change-this-secret-key-in-production-abc123
       FLASK_ENV: development
@@ -247,6 +248,34 @@ services:
     depends_on:
       - keycloak
       - mcp-service
+    networks:
+      - oauth2-net
+
+  # ── AI Agent (UC4) — User-Delegated (OBO + Rescope) → MCP ────────────────────
+  # Authenticated user delegates a task to this agent.  It performs an RFC 8693
+  # token exchange with scope narrowing in one step, producing a token with the
+  # user's sub preserved and an act claim naming this client.  The MCP service
+  # logs the full custody chain for every accepted token.
+  agent-delegated:
+    build:
+      context: ./ai-agents/agent-delegated
+      dockerfile: Dockerfile
+    container_name: oauth2-agent-delegated
+    environment:
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_REALM: demo
+      AGENT_CLIENT_ID: ai-agent-delegated
+      AGENT_CLIENT_SECRET: ai-agent-delegated-secret
+      MCP_SERVER_URL: http://mcp-service:8003/mcp
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+    ports:
+      - "9004:9004"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      mcp-service:
+        condition: service_started
     networks:
       - oauth2-net
 

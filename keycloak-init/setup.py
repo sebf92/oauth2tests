@@ -126,8 +126,12 @@ def setup_token_exchange(token: str) -> None:
     h    = {"Authorization": f"Bearer {token}"}
     base = f"{KC_URL}/admin/realms/{REALM}"
 
-    for client_id_str in ("middle-tier-client", "demo-client"):
+    for client_id_str in ("middle-tier-client", "demo-client", "ai-agent-delegated"):
         client_list = _get(f"{base}/clients", h, params={"clientId": client_id_str}).json()
+        if not client_list:
+            # ai-agent-delegated may not exist yet on first run — handled below.
+            print(f"  {client_id_str:<25} not found yet, will be created later")
+            continue
         cid = client_list[0]["id"]
         print(f"  {client_id_str:<25} id = {cid}")
 
@@ -604,6 +608,92 @@ def ensure_ai_agent_cert_client(token: str) -> None:
     print(f"  ai-agent-cert client     id = {cid} (created with private_key_jwt)")
 
 
+def ensure_ai_agent_delegated_client(token: str) -> None:
+    """Ensure the ai-agent-delegated client exists (UC4 — user-delegated agent).
+
+    Confidential client used by the agent to perform RFC 8693 token exchange on
+    behalf of an authenticated user.  Standard token exchange must be enabled on
+    this client; the resulting tokens carry the user's `sub` and an `act` claim
+    naming this client as the actor.
+
+    Idempotent: creates the client if missing, otherwise leaves it alone.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    existing = _get(f"{base}/clients", h, params={"clientId": "ai-agent-delegated"}).json()
+    if existing:
+        print(f"  ai-agent-delegated client id = {existing[0]['id']} (already exists)")
+        return
+
+    r = httpx.post(
+        f"{base}/clients",
+        headers=h,
+        json={
+            "clientId":                  "ai-agent-delegated",
+            "secret":                    "ai-agent-delegated-secret",
+            "enabled":                   True,
+            "serviceAccountsEnabled":    True,
+            "standardFlowEnabled":       False,
+            "directAccessGrantsEnabled": False,
+            "publicClient":              False,
+            "protocol":                  "openid-connect",
+            "defaultClientScopes":       ["web-origins", "acr", "profile", "email"],
+            "optionalClientScopes":      ["roles"],
+            "attributes": {
+                # Required for RFC 8693 token exchange on KC 26.2+.
+                "standard.token.exchange.enabled": "true",
+            },
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    cid = r.headers["Location"].rstrip("/").split("/")[-1]
+    print(f"  ai-agent-delegated client id = {cid} (created)")
+
+
+def ensure_delegated_audience_mapper_on_demo_client(token: str) -> None:
+    """Ensure demo-client's user tokens include ai-agent-delegated in their aud claim.
+
+    OBO exchange requires the exchanging client (ai-agent-delegated) to appear in
+    the subject_token's audience.  We add a second audience mapper on demo-client
+    alongside the existing middle-tier-audience mapper.
+
+    Idempotent: skips if the mapper already exists.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    demo_clients = _get(f"{base}/clients", h, params={"clientId": "demo-client"}).json()
+    if not demo_clients:
+        print("  ⚠ demo-client not found — cannot attach audience mapper")
+        return
+    demo_id = demo_clients[0]["id"]
+
+    mappers = _get(f"{base}/clients/{demo_id}/protocol-mappers/models", h).json()
+    if any(m["name"] == "delegated-agent-audience" for m in mappers):
+        print("  delegated-agent-audience mapper already attached to demo-client")
+        return
+
+    r = httpx.post(
+        f"{base}/clients/{demo_id}/protocol-mappers/models",
+        headers=h,
+        json={
+            "name":           "delegated-agent-audience",
+            "protocol":       "openid-connect",
+            "protocolMapper": "oidc-audience-mapper",
+            "config": {
+                "included.client.audience": "ai-agent-delegated",
+                "id.token.claim":           "false",
+                "access.token.claim":       "true",
+            },
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    print("  ✓ delegated-agent-audience mapper attached to demo-client")
+
+
 def ensure_ai_agent_secret_client(token: str) -> None:
     """Ensure the ai-agent-secret client exists.
 
@@ -717,11 +807,23 @@ def main() -> None:
     ensure_ai_agent_secret_client(token)
     ensure_ai_agent_spiffe_client(token)
     ensure_ai_agent_cert_client(token)
+    ensure_ai_agent_delegated_client(token)
+    ensure_delegated_audience_mapper_on_demo_client(token)
+    # standard.token.exchange.enabled was set above for the existing clients;
+    # the newly-created ai-agent-delegated client needs it too.  Re-run the
+    # idempotent loop to pick it up.
+    setup_token_exchange(token)
     mcp_scope_id = ensure_mcp_client_scope(token)
+    # UC1/UC2/UC3a — service-principal agents.  Need both the scope (so the agent
+    # can request scope=mcp) and the mcp-user role on the service account.
     for client_id_str in ("ai-agent-secret", "ai-agent-spiffe", "ai-agent-cert"):
         ensure_mcp_scope_on_client(token, client_id_str, mcp_scope_id)
         ensure_mcp_role_on_service_account(token, client_id_str)
-    print("\n✓ Agentic AI (UC1 + UC2 + UC3a) setup complete — all three agents can access MCP!")
+    # UC4 — user-delegated agent.  Need the scope so the exchange can request
+    # scope=mcp, but NO role on the service account: the resulting token's
+    # identity is the user (sub=alice), not the agent's service account.
+    ensure_mcp_scope_on_client(token, "ai-agent-delegated", mcp_scope_id)
+    print("\n✓ Agentic AI (UC1 + UC2 + UC3a + UC4) setup complete — all four agents can access MCP!")
 
 
 if __name__ == "__main__":

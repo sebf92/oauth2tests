@@ -5,12 +5,15 @@
 
 {# ── Hero ───────────────────────────────────────────────────────────────────── #}
 <div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-primary">
-  <h1 class="h4 fw-bold mb-1"><i class="bi bi-shield-lock text-primary me-2"></i>OAuth2 + JWT with Keycloak</h1>
+  <h1 class="h4 fw-bold mb-1"><i class="bi bi-shield-lock text-primary me-2"></i>OAuth2 + JWT + Agentic AI with Keycloak</h1>
   <p class="text-muted mb-0">
-    Eleven flows demonstrated end-to-end: three OAuth2 grant types and eight advanced flows —
-    OBO token exchange, downscoping, SPIFFE workload identity, OIDC, DPoP proof of possession,
-    Device Authorization Grant, PKCE, and Token Introspection —
-    all backed by <strong>Keycloak 26.6.1</strong> and validated by the <strong>Resource Server</strong>.
+    <strong>Eleven OAuth2 / OIDC flows</strong> — three grant types and eight advanced flows
+    (OBO token exchange, downscoping, SPIFFE workload identity, OIDC, DPoP proof of possession,
+    Device Authorization Grant, PKCE, Token Introspection) — plus
+    <strong>four Agentic AI patterns</strong> (Client Secret, SPIFFE, X.509 certificate,
+    user-delegated OBO + rescoping) calling a real <strong>MCP server</strong> over Streamable HTTP.
+    All backed by <strong>Keycloak 26.6.1</strong>, validated by the <strong>Resource Server</strong>,
+    and driven by the <strong>Anthropic SDK</strong> tool-use loop in the agentic section.
   </p>
 </div>
 
@@ -487,8 +490,9 @@
       <p class="text-muted small mb-0">
         An AI agent (Python container running the Anthropic SDK) authenticates to Keycloak,
         opens a real <strong>MCP Streamable HTTP</strong> session to a protected MCP server,
-        and runs a Claude tool-use loop. Three patterns demonstrate different agent
-        authentication mechanisms.
+        and runs a Claude tool-use loop. Four patterns are demonstrated:
+        three service-principal authentication mechanisms (UC1&ndash;UC3a) and
+        one user-delegated flow (UC4) with full custody chain.
       </p>
     </div>
     <a href="/agentic" class="btn btn-info text-white ms-auto">
@@ -564,6 +568,36 @@
         <a href="/agentic/cert" class="btn btn-warning w-100 mt-auto text-dark">
           <i class="bi bi-play-circle me-1"></i>Run Agent
         </a>
+      </div>
+    </div>
+  </div>
+
+  {# UC4 — User-Delegated (OBO + Rescope) #}
+  <div class="col-md-6 col-lg-4">
+    <div class="card flow-card shadow-sm border-start border-4 border-info h-100">
+      <div class="card-body d-flex flex-column">
+        <div class="d-flex align-items-center mb-2">
+          <i class="bi bi-person-arms-up text-info me-2" style="font-size:1.5rem"></i>
+          <h6 class="mb-0">UC4 &mdash; User-Delegated</h6>
+        </div>
+        <span class="badge bg-info mb-2 align-self-start">OBO + Rescoping</span>
+        <p class="card-text text-muted small mb-3">
+          Authenticated user delegates to the agent. RFC 8693 exchange preserves
+          <code>sub=user</code>, narrows scope, records the agent in
+          <code>act</code> — full custody chain for audit.
+        </p>
+        <div class="bg-light rounded p-2 small font-monospace mb-3">
+          user_token → exchange → sub=user, act=agent
+        </div>
+        {% if is_authenticated %}
+          <a href="/agentic/user-delegated-rescope" class="btn btn-info text-white w-100 mt-auto">
+            <i class="bi bi-play-circle me-1"></i>Run Agent on My Behalf
+          </a>
+        {% else %}
+          <a href="/auth/authorization-code" class="btn btn-outline-info w-100 mt-auto">
+            <i class="bi bi-box-arrow-in-right me-1"></i>Log in first
+          </a>
+        {% endif %}
       </div>
     </div>
   </div>

@@ -19,6 +19,7 @@ graph TB
         H9001["localhost:9001"]
         H9002["localhost:9002"]
         H9003["localhost:9003"]
+        H9004["localhost:9004"]
     end
 
     subgraph Net["Docker network — oauth2-net"]
@@ -33,6 +34,7 @@ graph TB
         AS[agent-secret :9001<br/>UC1]
         AP[agent-spiffe :9002<br/>UC2]
         AC[agent-cert :9003<br/>UC3a]
+        AD[agent-delegated :9004<br/>UC4]
 
         subgraph OneShot["One-shot containers"]
             KI[keycloak-init]
@@ -49,6 +51,7 @@ graph TB
     H9001 -.- AS
     H9002 -.- AP
     H9003 -.- AC
+    H9004 -.- AD
 
     CA --> KC
     CA --> RS
@@ -56,6 +59,7 @@ graph TB
     CA --> AS
     CA --> AP
     CA --> AC
+    CA -- "user_access_token" --> AD
 
     RS --> KC
     SS --> KC
@@ -68,6 +72,8 @@ graph TB
     AP --> SA
     AC --> KC
     AC --> MCP
+    AD -- "RFC 8693 exchange" --> KC
+    AD --> MCP
 
     KC --> PG
     KI --> KC
@@ -134,7 +140,7 @@ agents are pull-based JWKS fetches Keycloak makes to verify
   cookie, encrypted with `SECRET_KEY`).
 - **Major subsystems in `app.py`:**
   - 11 OAuth2 / OIDC flow routes (see `PROJECT-SPECIFICATION.md` §2)
-  - `/agentic` and `/agentic/<slug>` routes — proxy the three agent
+  - `/agentic` and `/agentic/<slug>` routes — proxy the four agent
     containers, render structured traces
   - `/docs` and `/docs/<slug>` routes — markdown rendering pipeline
   - `/api/call/<name>` — proxies to the resource server
@@ -253,6 +259,19 @@ agents are pull-based JWKS fetches Keycloak makes to verify
 - **Runs as UID 1100** (Dockerfile `useradd -u 1100`).
 - **Reads:** `agent-cert-pki:/pki:ro` (read-only).
 
+### `agent-delegated` (custom, `ai-agents/agent-delegated/Dockerfile`)
+- **Role:** UC4 demo agent on :9004. Performs RFC 8693 token exchange on
+  behalf of a logged-in user.
+- **Auth path:** receives the user's access token via `POST /run` body →
+  performs combined OBO + scope-narrowing exchange against Keycloak with
+  its own `client_credentials` → uses the resulting delegated token
+  (`sub=user`, `azp=ai-agent-delegated`, `scope=mcp`) to call MCP.
+- **Contract difference:** `POST /run` **requires** a JSON body
+  `{"user_access_token": "<T0>"}`. The Flask client-app gates on session,
+  fetches the token, and forwards. Unauthenticated callers receive 422.
+- **No `mcp-user` role on the service account.** Identity in the
+  resulting token is the user, not the service account.
+
 ---
 
 ## 3. Network model
@@ -302,6 +321,7 @@ are summarised here:
               │   • dpop-client          (DPoP with Password Grant)            │
               │   • device-client        (Device Authorization)                │
               │   • ai-agent-secret      (Agentic AI UC1)                      │
+              │   • ai-agent-delegated   (Agentic AI UC4 — OBO + Rescope)      │
               └───────────────────────────┬────────────────────────────────────┘
               │ public clients (no secret)                                     │
               │   • pkce-client          (PKCE Auth Code)                      │
@@ -342,7 +362,8 @@ The Keycloak realm-level configuration provides:
    - `resource-server` (depends on `keycloak`)
    - `spiffe-service` (depends on `spire-agent` + `keycloak`)
    - `mcp-service` (depends on `keycloak`)
-   - `agent-secret`, `agent-spiffe`, `agent-cert` (depend on `mcp-service`)
+   - `agent-secret`, `agent-spiffe`, `agent-cert`, `agent-delegated`
+     (depend on `mcp-service`)
    - `client-app` (depends on `keycloak`, `resource-server`)
 
 ### Warm start (subsequent `docker compose up -d`)
@@ -416,6 +437,29 @@ agent-cert → load /pki/agent.{key,crt} at startup
           ← Keycloak: GET http://agent-cert:9003/jwks (which embeds x5c + x5t#S256)
           ← access_token
           (rest identical to UC1)
+```
+
+### UC4 inverts the identity model — the user is the principal:
+
+```
+Browser → /agentic/user-delegated-rescope  (Flask checks for active session)
+       Flask → POST http://agent-delegated:9004/run
+                body: {"user_access_token": <user T0>}
+       agent-delegated → POST http://keycloak:8080/.../token
+                grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+                client_id=ai-agent-delegated + client_secret=…
+                subject_token=<user T0>
+                scope=mcp                  ← narrowing
+       ← Keycloak validates subject_token aud, applies mcp scope mappers
+       ← access_token T1:
+              sub=<user UUID>              ← preserved
+              azp=ai-agent-delegated       ← acting client
+              scope=… mcp                  ← narrowed
+              aud=mcp-service              ← narrowed
+              realm_access.roles = (absent) ← dropped with the roles scope
+       → MCP Streamable HTTP session with Bearer T1
+       MCP server logs custody chain: "subject=alice actors=ai-agent-delegated"
+       (rest identical to UC1)
 ```
 
 ### OAuth2 user flow (Authorization Code example)

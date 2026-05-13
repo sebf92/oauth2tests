@@ -19,7 +19,7 @@ For deeper detail:
 
 An end-to-end **educational demonstration** of OAuth2 / OpenID Connect /
 SPIFFE / MCP-authenticated AI agents, backed by Keycloak 26.6.1 and a
-multi-container Docker stack. Eleven OAuth2 / OIDC flows and three agentic
+multi-container Docker stack. Eleven OAuth2 / OIDC flows and four agentic
 AI patterns are demonstrated **live and clickable** from a Flask web UI on
 `http://localhost:5000`.
 
@@ -55,6 +55,7 @@ ai-agents/
   agent-secret/      UC1 :9001 — Client Credentials → MCP
   agent-spiffe/      UC2 :9002 — SPIFFE attestation → RFC 7523 → MCP
   agent-cert/        UC3a :9003 — X.509 cert → RFC 7523 → MCP
+  agent-delegated/   UC4 :9004 — RFC 8693 OBO + rescope → MCP (requires logged-in user)
 cert-init/           One-shot container that generates CA + agent.crt for UC3a
 docs/                Markdown docs (rendered in the Flask UI via DOCS_MANIFEST in
                      client-app/app.py) + AI-agent reference docs (ALL-CAPS prefix)
@@ -77,10 +78,14 @@ docker compose run --rm keycloak-init
 # Watch logs:
 docker logs -f oauth2-<service>                  # mcp-service, agent-secret, …
 
-# Smoke-test the three Agentic AI agents (returns structured JSON traces):
+# Smoke-test the four Agentic AI agents (returns structured JSON traces):
 curl -s -X POST http://localhost:9001/run        # UC1
 curl -s -X POST http://localhost:9002/run        # UC2
 curl -s -X POST http://localhost:9003/run        # UC3a
+# UC4 requires a logged-in user — fetch T0 first via /token/inspect:
+curl -s -X POST http://localhost:9004/run \
+     -H "Content-Type: application/json" \
+     -d "{\"user_access_token\": \"$T0\"}"        # UC4
 
 # Smoke-test the MCP server discovery (no auth needed):
 curl -s http://localhost:8003/.well-known/oauth-protected-resource
@@ -145,11 +150,19 @@ copy the closest one. Examples:
 
 To add a new agentic AI demo:
 1. Create `ai-agents/<name>/` with `Dockerfile`, `requirements.txt`, `agent.py`
-   following the existing `agent-secret` / `agent-spiffe` / `agent-cert` pattern
+   following the closest existing pattern:
+   - **Service-principal agents** (agent authenticates as itself): clone
+     `agent-secret` (client_credentials) / `agent-spiffe` (SPIFFE +
+     private_key_jwt) / `agent-cert` (X.509 + private_key_jwt).
+   - **User-delegated agents** (agent acts on behalf of a logged-in user):
+     clone `agent-delegated` (RFC 8693 token exchange) — `POST /run`
+     accepts a `{"user_access_token": "..."}` body via pydantic.
 2. Agent must expose `GET /info`, `GET /health`, `POST /run` returning the
    structured trace dataclass shape used by `agentic_result.html`
 3. Add a service in `docker-compose.yml`
-4. Add an `AGENT_REGISTRY` entry to `client-app/app.py`
+4. Add an `AGENT_REGISTRY` entry to `client-app/app.py`. For user-delegated
+   agents, set `requires_user_token: True` so the route layer gates on a
+   session and forwards `td["access_token"]` automatically.
 5. Update `client-app/templates/index.html` and
    `client-app/templates/agentic_index.html` with a card pointing at
    `/agentic/<slug>`
@@ -290,9 +303,10 @@ and any other `docker exec` with absolute Unix paths.
 ## Working on the codebase — defaults
 
 - **Edit, don't rewrite.** Use `Edit` on existing files. Match surrounding
-  patterns. Three agent files have intentional duplication so each is
-  self-contained for learning — don't refactor them into a shared module
-  without explicit user request.
+  patterns. The four agent files (`agent-secret`, `agent-spiffe`,
+  `agent-cert`, `agent-delegated`) have intentional duplication so each
+  is self-contained for learning — don't refactor them into a shared
+  module without explicit user request.
 - **Idempotent Keycloak changes.** Any realm modification needs both a
   `realm-export.json` update AND a `keycloak-init` `ensure_*` function. See
   convention §2 above.
@@ -338,8 +352,9 @@ and any other `docker exec` with absolute Unix paths.
 - **Do not** introduce new ports without considering the host's existing
   port allocations. Active ports: 5000 (client-app), 8001 (resource-server),
   8002 (spiffe-service), 8003 (mcp-service), 8080 (Keycloak), 9000
-  (Keycloak management), 9001/9002/9003 (agents), 5432 (Postgres). Reserved
-  for UC3b roadmap: 8443 (mTLS proxy), 9004 (cert-mtls agent).
+  (Keycloak management), 9001/9002/9003/9004 (agents UC1–UC4), 5432
+  (Postgres). Reserved for UC3b roadmap: 8443 (mTLS proxy), 9005
+  (cert-mtls agent).
 
 ## When in doubt
 

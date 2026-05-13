@@ -97,7 +97,11 @@
       "Bash(grep -oE '\\(X\\\\.509 Certificate|ai-agent-cert|OAuth2 Demo CA|sha256_fp|Issuing CA|x5t#S256|ecdsa-with-SHA256|Widget Pro|For your \\\\$40\\)')",
       "Bash(curl -s -o /dev/null -w \"HTTP %{http_code} - %{size_download} bytes\\\\n\" http://localhost:5000/docs/agentic-ai)",
       "Bash(curl -s http://localhost:5000/docs/agentic-ai)",
-      "Bash(curl -s http://localhost:5000/docs)"
+      "Bash(curl -s http://localhost:5000/docs)",
+      "Bash(curl -s -X POST http://localhost:9004/run -H 'Content-Type: application/json' -d '{\"user_access_token\":\"__TRACKED_VAR__\"}' -o .uc4.json)",
+      "Bash(curl -s -X POST http://localhost:8080/realms/demo/protocol/openid-connect/token -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange -d client_id=ai-agent-delegated -d client_secret=ai-agent-delegated-secret -d subject_token=__TRACKED_VAR__ -d subject_token_type=urn:ietf:params:oauth:token-type:access_token -d scope=mcp)",
+      "Bash(curl -s -X POST http://localhost:9001/run -o /dev/null)",
+      "Bash(curl -sI http://localhost:5000/agentic/user-delegated-rescope)"
     ]
   }
 }

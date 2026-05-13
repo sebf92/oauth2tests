@@ -10,10 +10,12 @@
     <div>
       <h1 class="h4 fw-bold mb-1">Agentic AI &mdash; Authenticated MCP Access</h1>
       <p class="text-muted mb-0">
-        Three patterns for authenticating an AI agent to a protected
-        <strong>MCP server</strong> (Model Context Protocol). Each agent obtains a
-        Keycloak access token using a different mechanism, then calls real MCP tools
-        over Streamable HTTP using the official MCP Python SDK.
+        Four patterns for AI agents accessing a protected
+        <strong>MCP server</strong> (Model Context Protocol). Three service-principal
+        agents (UC1&ndash;UC3a) authenticate as themselves; the fourth (UC4) is
+        delegated to by a logged-in human user and acts on their behalf with a
+        narrower scope. All four use real MCP Streamable HTTP via the official
+        MCP Python SDK.
       </p>
     </div>
   </div>
@@ -91,14 +93,20 @@
           <i class="bi {{ meta.icon }} text-{{ meta.color }} me-2" style="font-size:1.5rem"></i>
           <h6 class="mb-0">{{ meta.title }}</h6>
         </div>
-        <span class="badge bg-{{ meta.color }} mb-2 align-self-start">{{ meta.badge }}</span>
+        <span class="badge bg-{{ meta.color }} {{ 'text-white' if meta.color == 'info' else '' }} mb-2 align-self-start">{{ meta.badge }}</span>
         <p class="card-text text-muted small mb-3">{{ meta.description }}</p>
         <div class="bg-light rounded p-2 small font-monospace mb-3 text-truncate">
           {{ meta.rfc }}
         </div>
-        <a href="{{ url_for('agentic_agent', slug=slug) }}" class="btn btn-{{ meta.color }} w-100 mt-auto">
-          <i class="bi bi-play-circle me-1"></i>Run Agent
-        </a>
+        {% if meta.requires_user_token and not is_authenticated %}
+          <a href="{{ url_for('start_auth_code') }}" class="btn btn-outline-{{ meta.color }} w-100 mt-auto">
+            <i class="bi bi-box-arrow-in-right me-1"></i>Log in first
+          </a>
+        {% else %}
+          <a href="{{ url_for('agentic_agent', slug=slug) }}" class="btn btn-{{ meta.color }} {{ 'text-white' if meta.color == 'info' else '' }} w-100 mt-auto">
+            <i class="bi bi-play-circle me-1"></i>Run Agent
+          </a>
+        {% endif %}
       </div>
     </div>
   </div>

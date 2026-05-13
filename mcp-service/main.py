@@ -155,6 +155,41 @@ def _validate_bearer(raw_token: str) -> dict:
     if "mcp" not in scopes:
         raise TokenError("token missing required 'mcp' scope")
 
+    # ── Audit log — emit one line per accepted MCP request capturing the full
+    # custody chain.  RFC 8693 §4.1: the act claim names the actor on the
+    # immediate hop; nested exchanges produce nested act claims.  We walk the
+    # chain so deeper delegations (alice → middle-tier → agent) are visible.
+    #
+    # IMPORTANT: Keycloak 26's V2 (standard) token exchange does not emit `act`
+    # by default for single-hop exchanges — it sets `azp` to the new client.
+    # We fall back to `azp` as the actor when:
+    #   • no act claim is present, AND
+    #   • the subject is a human user (preferred_username has no "service-account-" prefix)
+    # This keeps the audit log accurate for UC4 even without a custom KC mapper.
+    subject = payload.get("preferred_username") or payload.get("sub") or "?"
+    actors: list[str] = []
+    act = payload.get("act") or {}
+    while act:
+        actors.append(act.get("sub") or act.get("client_id") or "?")
+        act = act.get("act") or {}
+
+    pref = payload.get("preferred_username") or ""
+    azp  = payload.get("azp")
+    is_human_subject = pref and not pref.startswith("service-account-")
+    if not actors and is_human_subject and azp and azp != pref:
+        actors.append(azp)
+
+    if actors:
+        logger.info(
+            "MCP token accepted — subject=%s actors=%s scope=%s azp=%s",
+            subject, " → ".join(actors), payload.get("scope"), azp,
+        )
+    else:
+        logger.info(
+            "MCP token accepted — subject=%s (direct, no delegation) scope=%s azp=%s",
+            subject, payload.get("scope"), azp,
+        )
+
     return payload
 
 

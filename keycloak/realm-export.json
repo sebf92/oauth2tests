@@ -69,6 +69,17 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "delegated-agent-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "ai-agent-delegated",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
         }
       ],
       "defaultClientScopes": [
@@ -145,6 +156,38 @@
         "phone",
         "offline_access",
         "microprofile-jwt"
+      ]
+    },
+    {
+      "clientId": "ai-agent-delegated",
+      "name": "AI Agent — User-Delegated (OBO + Rescope)",
+      "description": "Agentic AI demo — performs RFC 8693 token exchange with scope narrowing on the user's behalf, preserving the custody chain via the act claim",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "ai-agent-delegated-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true,
+      "attributes": {
+        "standard.token.exchange.enabled": "true"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt",
+        "roles"
       ]
     },
     {
@@ -267,6 +310,12 @@
       "enabled": true,
       "serviceAccountClientId": "ai-agent-secret",
       "realmRoles": ["mcp-user"]
+    },
+    {
+      "username": "service-account-ai-agent-delegated",
+      "enabled": true,
+      "serviceAccountClientId": "ai-agent-delegated",
+      "realmRoles": []
     }
   ]
 }

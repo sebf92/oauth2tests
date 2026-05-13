@@ -67,16 +67,16 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
-import html as _html
-import markdown as _markdown
-import re as _re
 import requests
-from markupsafe import Markup
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes as crypto_hashes
-from cryptography.hazmat.primitives.asymmetric.ec import ECDSA, SECP256R1, generate_private_key
-from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+
+# DPoP cryptography helpers — extracted module (RFC 9449).  _b64url lives there
+# too because PKCE re-uses it for encoding the code_verifier.
+from dpop import _b64url, generate_dpop_keypair, jwk_thumbprint, make_dpop_proof
+
+# Markdown rendering pipeline for /docs/* — extracted module.  The Flask routes
+# stay here; everything they need (manifest, renderer, Pygments CSS) lives there.
+from docs_renderer import DOCS_DIR, DOCS_MANIFEST, _PYGMENTS_CSS, _render_doc
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
@@ -110,10 +110,11 @@ REDIRECT_URI  = os.getenv("REDIRECT_URI", "http://localhost:5000/auth/callback")
 # ── Agentic AI configuration ──────────────────────────────────────────────────
 # Server-side URLs for the MCP service and each agent container.  Used by the
 # /agentic/* routes which trigger an agent run and render its structured trace.
-MCP_SERVICE_URL  = os.getenv("MCP_SERVICE_URL",  "http://mcp-service:8003")
-AGENT_SECRET_URL = os.getenv("AGENT_SECRET_URL", "http://agent-secret:9001")
-AGENT_SPIFFE_URL = os.getenv("AGENT_SPIFFE_URL", "http://agent-spiffe:9002")
-AGENT_CERT_URL   = os.getenv("AGENT_CERT_URL",   "http://agent-cert:9003")
+MCP_SERVICE_URL     = os.getenv("MCP_SERVICE_URL",     "http://mcp-service:8003")
+AGENT_SECRET_URL    = os.getenv("AGENT_SECRET_URL",    "http://agent-secret:9001")
+AGENT_SPIFFE_URL    = os.getenv("AGENT_SPIFFE_URL",    "http://agent-spiffe:9002")
+AGENT_CERT_URL      = os.getenv("AGENT_CERT_URL",      "http://agent-cert:9003")
+AGENT_DELEGATED_URL = os.getenv("AGENT_DELEGATED_URL", "http://agent-delegated:9004")
 
 # Agent registry — slug → (display name, agent base URL, description, icon, color, badge).
 # Adding a new agent (e.g. UC3 cert) is a single entry here plus a container in
@@ -152,6 +153,19 @@ AGENT_REGISTRY = {
         "badge":       "UC3a · Certificate",
         "rfc":         "RFC 7523 + X.509",
     },
+    "user-delegated-rescope": {
+        "title":       "User-Delegated (OBO + Rescope)",
+        "url":         AGENT_DELEGATED_URL,
+        "description": "An authenticated user delegates a task to the agent.  RFC 8693 token "
+                       "exchange preserves the user's identity (sub) while narrowing the scope, "
+                       "and the act claim records the agent as the actor — full custody chain "
+                       "for audit.  Requires a logged-in user.",
+        "icon":        "bi-person-arms-up",
+        "color":       "info",
+        "badge":       "UC4 · OBO + Rescoping",
+        "rfc":         "RFC 8693",
+        "requires_user_token": True,
+    },
 }
 
 # Keycloak endpoints
@@ -161,85 +175,6 @@ KC_LOGOUT_URL     = f"{KC_EXT}/realms/{REALM}/protocol/openid-connect/logout"
 KC_DEVICE_URL     = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/auth/device"
 KC_INTROSPECT_URL = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/token/introspect"
 KC_REVOKE_URL     = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/revoke"
-
-
-# ── DPoP helpers ───────────────────────────────────────────────────────────────
-
-def _b64url(data: bytes) -> str:
-    """Base64url-encode without padding."""
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def generate_dpop_keypair():
-    """
-    Generate an ephemeral EC P-256 key pair for a single DPoP session.
-
-    Returns (private_key, public_jwk_dict).  The key is created in memory and
-    never persisted — generating a new pair per request is intentional: DPoP
-    proof tokens carry a unique jti so they cannot be replayed, and the key pair
-    being short-lived means a stolen proof is useless after the session ends.
-    P-256 (secp256r1) is required by RFC 9449 §4 for the ES256 algorithm.
-    """
-    priv = generate_private_key(SECP256R1(), default_backend())
-    nums = priv.public_key().public_numbers()
-    pub_jwk = {
-        "kty": "EC",
-        "crv": "P-256",
-        "x":   _b64url(nums.x.to_bytes(32, "big")),
-        "y":   _b64url(nums.y.to_bytes(32, "big")),
-    }
-    return priv, pub_jwk
-
-
-def jwk_thumbprint(pub_jwk: dict) -> str:
-    """Compute the RFC 7638 JWK thumbprint (SHA-256 of canonical key members)."""
-    canonical = json.dumps(
-        {"crv": pub_jwk["crv"], "kty": pub_jwk["kty"], "x": pub_jwk["x"], "y": pub_jwk["y"]},
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return _b64url(hashlib.sha256(canonical.encode()).digest())
-
-
-def make_dpop_proof(
-    priv_key,
-    pub_jwk: dict,
-    htm: str,
-    htu: str,
-    access_token: str | None = None,
-) -> str:
-    """
-    Build a signed DPoP proof JWT (RFC 9449 §4.2).
-
-    htm            HTTP method in uppercase ("POST", "GET", …).
-    htu            Full URI without query string or fragment.  Keycloak validates
-                   the htu in the token-endpoint proof against the URL it actually
-                   received the request at — use KC_TOKEN_URL, not the public URL.
-    access_token   When calling a resource server, pass the access token so the
-                   ath claim (SHA-256 of the token) is included.  ath binds the
-                   proof to a specific token, preventing an attacker from reusing
-                   a captured proof with a different (stolen) access token.
-
-    Two proofs are needed per DPoP flow:
-      Proof 1 → token endpoint  (htm=POST, no ath — token not yet obtained)
-      Proof 2 → resource server (htm=GET,  ath=SHA-256(access_token))
-    """
-    header = {"typ": "dpop+jwt", "alg": "ES256", "jwk": pub_jwk}
-    claims = {"jti": secrets.token_urlsafe(16), "htm": htm, "htu": htu, "iat": int(time.time())}
-    if access_token is not None:
-        claims["ath"] = _b64url(hashlib.sha256(access_token.encode()).digest())
-
-    h_b64 = _b64url(json.dumps(header, separators=(",", ":")).encode())
-    p_b64 = _b64url(json.dumps(claims, separators=(",", ":")).encode())
-    signing_input = f"{h_b64}.{p_b64}".encode()
-
-    der_sig = priv_key.sign(signing_input, ECDSA(crypto_hashes.SHA256()))
-    r, s    = decode_dss_signature(der_sig)
-    # cryptography's sign() returns ASN.1 DER. ES256 (JWA) requires the raw
-    # r || s encoding (two 32-byte big-endian integers, no framing). We extract
-    # r and s via decode_dss_signature and re-encode manually.
-    raw_sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
-    return f"{h_b64}.{p_b64}.{_b64url(raw_sig)}"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -1348,11 +1283,27 @@ def agentic_agent(slug: str):
          heavy if the agent is unhealthy.
       2. POST <agent>/run    to execute the full pipeline (token → MCP → Claude
          → final answer).  Long-ish — the Anthropic loop can take a few seconds.
+
+    User-delegated agents (those with meta["requires_user_token"] = True) need
+    the authenticated user's access token forwarded as the subject_token for the
+    RFC 8693 exchange.  If the user is not logged in we redirect to login.
     """
     meta = AGENT_REGISTRY.get(slug)
     if not meta:
         flash(f"Unknown agent: '{slug}'.", "warning")
         return redirect(url_for("agentic_index"))
+
+    # Gate on a valid session for user-delegated agents.
+    payload: dict = {}
+    if meta.get("requires_user_token"):
+        td = session.get("token_data")
+        if not td:
+            flash("This agent acts on your behalf — please log in first.", "warning")
+            return redirect(url_for("start_auth_code"))
+        if token_expired(td):
+            flash("Your token has expired. Please log in again to delegate to this agent.", "warning")
+            return redirect(url_for("start_auth_code"))
+        payload = {"user_access_token": td["access_token"]}
 
     info_data: dict = {}
     run_data:  dict | None = None
@@ -1368,7 +1319,13 @@ def agentic_agent(slug: str):
         try:
             # Agent runs can take several seconds when the Anthropic SDK is in use,
             # so we use a generous timeout. The agent itself caps the tool-use loop.
-            run_resp = requests.post(f"{meta['url']}/run", timeout=120)
+            # `json=payload` sends an empty body for service-principal agents, and a
+            # {"user_access_token": "…"} body for user-delegated ones.  The agents
+            # that don't need the body simply ignore it (FastAPI accepts unknown
+            # JSON when no body is declared on the route).
+            run_resp = requests.post(f"{meta['url']}/run",
+                                     json=payload if payload else None,
+                                     timeout=120)
             if run_resp.ok:
                 run_data = run_resp.json()
             else:
@@ -1389,129 +1346,7 @@ def agentic_agent(slug: str):
     )
 
 
-# ── Docs section — rendered markdown documentation ────────────────────────────
-
-DOCS_DIR = os.getenv(
-    "DOCS_DIR",
-    # Development fallback: docs/ sits next to client-app/ in the project root
-    os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "docs")),
-)
-
-DOCS_MANIFEST = [
-    {
-        "slug":        "architecture",
-        "file":        "architecture.md",
-        "title":       "Architecture",
-        "icon":        "bi-diagram-3-fill",
-        "color":       "primary",
-        "badge":       "System Design",
-        "description": "Components, network topology, JWT structure, and security model",
-    },
-    {
-        "slug":        "oauth2-flows",
-        "file":        "oauth2-flows.md",
-        "title":       "OAuth2 / OIDC Flows",
-        "icon":        "bi-arrow-repeat",
-        "color":       "success",
-        "badge":       "Core Reference",
-        "description": "All eleven flows in detail — diagrams, request/response examples, and key differences",
-    },
-    {
-        "slug":        "spiffe-oauth2",
-        "file":        "spiffe-oauth2.md",
-        "title":       "SPIFFE / SPIRE + OAuth2",
-        "icon":        "bi-fingerprint",
-        "color":       "info",
-        "badge":       "Workload Identity",
-        "description": "JWT-SVIDs, RFC 7523 private_key_jwt client auth, and the legacy bridge pattern",
-    },
-    {
-        "slug":        "obo-manual-setup",
-        "file":        "obo-manual-setup.md",
-        "title":       "OBO Manual Setup",
-        "icon":        "bi-wrench-adjustable-circle-fill",
-        "color":       "warning",
-        "badge":       "How-To Guide",
-        "description": "Step-by-step guide for manually configuring On-Behalf-Of token exchange in KC 26.2+",
-    },
-    {
-        "slug":        "keycloak-brokering",
-        "file":        "keycloakbrokeringtoping.md",
-        "title":       "Keycloak → Ping Brokering",
-        "icon":        "bi-arrow-left-right",
-        "color":       "danger",
-        "badge":       "Identity Brokering",
-        "description": "How Keycloak brokers authentication to PingFederate / PingOne — sequence diagrams and 23-step flow walkthrough",
-    },
-    {
-        "slug":        "agentic-ai",
-        "file":        "agentic-ai.md",
-        "title":       "Agentic AI + MCP",
-        "icon":        "bi-cpu",
-        "color":       "info",
-        "badge":       "Agentic AI",
-        "description": "Three patterns for authenticating an AI agent to a protected MCP server — Client Secret, SPIFFE workload identity, and X.509 certificate. Sequence diagrams + implementation notes.",
-    },
-]
-
-# Generate Pygments CSS once at startup; injected into docs_page.html
-try:
-    from pygments.formatters import HtmlFormatter as _HtmlFormatter
-    _PYGMENTS_CSS = _HtmlFormatter(style="monokai").get_style_defs(".highlight")
-except Exception:
-    _PYGMENTS_CSS = ""
-
-
-# Pre-compiled regex for extracting ```mermaid … ``` fenced blocks from markdown.
-_MERMAID_FENCE_RE = _re.compile(r'```mermaid\s*\n(.*?)```', _re.DOTALL)
-
-
-def _render_doc(filename: str):
-    """
-    Read a markdown file from DOCS_DIR and render it to HTML + TOC.
-
-    Returns (content_html, toc_html) as Markup objects (already safe for Jinja2).
-
-    Mermaid diagram pipeline
-    ────────────────────────
-    Python-markdown's fenced_code extension would turn ```mermaid blocks into
-    <pre><code> blocks, which Mermaid.js cannot process.  We must intercept them
-    before markdown runs.  The steps are:
-
-      1. _MERMAID_FENCE_RE extracts the raw diagram source from each ```mermaid block.
-      2. _html.escape() HTML-encodes the source (<, >, &, ").  This is critical:
-         angle brackets in diagram labels (e.g. <token>) would be stripped by the
-         browser HTML parser if left as-is, breaking Mermaid syntax.
-      3. The escaped source is wrapped in <div class="mermaid">...</div>.
-         Python-markdown passes block-level HTML through unchanged.
-      4. In the browser, Mermaid.js reads element.textContent, which decodes HTML
-         entities back to the original characters (&lt; → <) before parsing.
-      5. docs_page.html conditionally loads Mermaid.js (ESM CDN build) only when
-         the rendered HTML contains at least one mermaid div.
-    """
-    path = os.path.join(DOCS_DIR, filename)
-    try:
-        with open(path, encoding="utf-8") as fh:
-            raw = fh.read()
-    except OSError:
-        return (
-            Markup("<p class='text-danger'><strong>Documentation file not found.</strong><br>"
-                   f"Expected path: <code>{path}</code></p>"),
-            Markup(""),
-        )
-    raw = _MERMAID_FENCE_RE.sub(
-        lambda m: f'<div class="mermaid">\n{_html.escape(m.group(1))}\n</div>', raw
-    )
-    md = _markdown.Markdown(
-        extensions=["tables", "fenced_code", "codehilite", "toc", "attr_list"],
-        extension_configs={
-            "codehilite": {"css_class": "highlight", "use_pygments": True},
-            "toc": {"title": "", "toc_depth": "2-3", "permalink": True,
-                    "permalink_class": "toc-anchor", "permalink_title": "¶"},
-        },
-    )
-    return Markup(md.convert(raw)), Markup(md.toc)
-
+# ── Docs section — Flask routes (rendering pipeline lives in docs_renderer.py) ─
 
 @app.route("/docs")
 def docs_index():

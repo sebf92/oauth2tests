@@ -45,8 +45,8 @@ completeness.
 
 Today the entire stack runs on plain HTTP (`KC_HTTP_ENABLED=true`).
 Switching Keycloak to HTTPS would force every service (client-app,
-resource-server, spiffe-service, mcp-service, all three agents, keycloak-init)
-to either trust a self-signed cert or disable verification. That is invasive
+resource-server, spiffe-service, mcp-service, all four agentic AI agents,
+keycloak-init) to either trust a self-signed cert or disable verification. That is invasive
 and risks destabilising the eleven existing demos.
 
 ### The chosen approach: nginx mTLS-terminating sidecar
@@ -344,7 +344,7 @@ Recommended sequence (each step is independently testable):
    `curl --cert agent.crt --key agent.key --cacert ca.crt https://localhost:8443/realms/demo/.well-known/openid-configuration`.
    Expect 200 with the discovery doc.
 3. **Keycloak `KC_PROXY_HEADERS`** — restart Keycloak. Verify all existing
-   demos still work (run UC1, UC2, UC3a once each).
+   demos still work (run UC1, UC2, UC3a, UC4 once each).
 4. **New Keycloak client** — run keycloak-init. Verify `ai-agent-cert-mtls`
    exists with `clientAuthenticatorType=x509`.
 5. **Manual token request** — outside the agent code:

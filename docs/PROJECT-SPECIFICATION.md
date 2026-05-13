@@ -8,12 +8,12 @@ high-level orientation see `CLAUDE.md`.
 
 ## 1. Project scope
 
-The platform demonstrates **fourteen authentication / authorization patterns**
+The platform demonstrates **fifteen authentication / authorization patterns**
 in a single Docker Compose stack:
 
 - **Eleven OAuth2 / OpenID Connect flows** (§2 below) accessible from
   `http://localhost:5000`
-- **Three Agentic AI patterns** (§3 below) accessible from
+- **Four Agentic AI patterns** (§3 below) accessible from
   `http://localhost:5000/agentic`
 
 A **rendered markdown documentation system** (§4) presents long-form
@@ -198,7 +198,40 @@ The Flask client-app proxies `/agentic/<slug>` to the corresponding agent's
 - **Trace fields:** `cert` + `auth` (with `assertion_header` showing
   `x5t#S256`, `assertion_claims`)
 
-### 3.4 Agent trace contract (AgentRun JSON)
+### 3.4 UC4 — User-Delegated (OBO + Rescope) → MCP
+
+- **Container:** `agent-delegated` :9004
+- **Slug (URL path):** `user-delegated-rescope`
+- **Keycloak client:** `ai-agent-delegated` (confidential, `client-secret` auth,
+  `standard.token.exchange.enabled=true`)
+- **Auth:** RFC 8693 token exchange. Single-step OBO + scope narrowing — the
+  exchange request includes `subject_token=<user T0>` + `scope=mcp`.
+- **Prerequisites:**
+  - Audience mapper on `demo-client` named `delegated-agent-audience` adding
+    `ai-agent-delegated` to the `aud` claim of alice's tokens
+  - `mcp` scope assigned to `ai-agent-delegated` as optional
+  - **No `mcp-user` role on the service account** — the resulting token's
+    identity is the user, not the service account
+- **Contract differs from UC1/UC2/UC3a:**
+  - `POST /run` body MUST contain `{"user_access_token": "<T0>"}` (validated
+    via pydantic — empty body returns 422)
+  - `GET /info` returns `requires_user_token: true`
+- **Trace fields (additional to base AgentRun):**
+  - `user_identity`: decoded subject token (T0) — display only
+  - `custody`: `{subject, actors[], summary}` — actor chain extracted from
+    nested `act` claims
+  - `scope_diff`: `{user_scopes[], delegated_scopes[], kept[], dropped[], added[]}`
+- **MCP audit logging:** mcp-service logs the actor chain for every accepted
+  request:
+  ```
+  MCP token accepted — subject=alice actors=ai-agent-delegated scope=… azp=ai-agent-delegated
+  ```
+- **AGENT_REGISTRY entry:** sets `requires_user_token: True` flag. The Flask
+  `/agentic/<slug>` route gates on a valid Flask session and forwards
+  `td["access_token"]` as the `user_access_token` body field. Unauthenticated
+  visitors are redirected to `/auth/authorization-code`.
+
+### 3.5 Agent trace contract (AgentRun JSON)
 
 Every agent's `/run` returns a dataclass-serialised JSON object with this
 shape (fields are use-case-dependent; unused ones are `null`):
@@ -263,7 +296,7 @@ The Flask renderer (`client-app/templates/agentic_result.html`) is generic
 across this shape — adding fields requires extending only the agent's
 dataclass + the template.
 
-### 3.5 Agent task (shared across all three)
+### 3.6 Agent task (shared across all four)
 
 ```
 I have a $40 budget for a gift. Look at the product catalogue, pick the
@@ -275,7 +308,7 @@ product data.
 Each agent uses the same task so traces are comparable across UCs.
 Configurable via the `AGENT_TASK` env var on each agent container.
 
-### 3.6 Mock vs live mode
+### 3.7 Mock vs live mode
 
 Each agent checks `ANTHROPIC_API_KEY`:
 - **Live:** invokes `anthropic.Anthropic().messages.create(...)` in a
@@ -403,7 +436,7 @@ lists produce **one TextContent per element**, so any client must use the
 | `spiffe-oauth2` | `docs/spiffe-oauth2.md` | Learners — SPIFFE deep dive |
 | `obo-manual-setup` | `docs/obo-manual-setup.md` | Operators — OBO config guide |
 | `keycloak-brokering` | `docs/keycloakbrokeringtoping.md` | Learners — KC↔Ping brokering |
-| `agentic-ai` | `docs/agentic-ai.md` | Learners — three Agentic AI patterns |
+| `agentic-ai` | `docs/agentic-ai.md` | Learners — four Agentic AI patterns |
 
 Files NOT in `DOCS_MANIFEST` (engineering artefacts, not rendered):
 - `docs/PROJECT-ARCHITECTURE.md` (this project's architecture spec)
@@ -456,6 +489,7 @@ pattern).
 | `ai-agent-secret` | client-secret | No | Client Credentials | UC1 |
 | `ai-agent-spiffe` | **client-jwt** | No | Client Credentials | UC2, `jwks_url=http://agent-spiffe:9002/jwks` |
 | `ai-agent-cert` | **client-jwt** | No | Client Credentials | UC3a, `jwks_url=http://agent-cert:9003/jwks` |
+| `ai-agent-delegated` | client-secret | No | **Token Exchange** | UC4, `standard.token.exchange.enabled=true`, OBO + rescope |
 
 ### 6.5 Custom client scope
 
@@ -528,10 +562,16 @@ ensure_mcp_user_role()
 ensure_ai_agent_secret_client()
 ensure_ai_agent_spiffe_client()
 ensure_ai_agent_cert_client()
+ensure_ai_agent_delegated_client()                       # UC4
+ensure_delegated_audience_mapper_on_demo_client()        # UC4
+setup_token_exchange()  # re-runs to pick up ai-agent-delegated's attribute
 mcp_scope_id = ensure_mcp_client_scope()
+# UC1/UC2/UC3a — service-principal agents need scope AND role on service account
 for cid in ("ai-agent-secret", "ai-agent-spiffe", "ai-agent-cert"):
     ensure_mcp_scope_on_client(token, cid, mcp_scope_id)
     ensure_mcp_role_on_service_account(token, cid)
+# UC4 — user-delegated agent needs scope only; sub is the user, not the service account
+ensure_mcp_scope_on_client(token, "ai-agent-delegated", mcp_scope_id)
 ```
 
 ### 7.4 When the existing realm and code disagree

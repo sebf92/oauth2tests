@@ -1,23 +1,25 @@
 # Agentic AI — Authenticated MCP Access
 
-This section adds three demos to the project, each showing a different way an
-AI agent can authenticate to a protected **Model Context Protocol (MCP)**
-server. The agents are containerised Python services that drive the official
+This section adds four demos to the project, each showing a different way an
+AI agent can authenticate (or be delegated to) when calling a protected
+**Model Context Protocol (MCP)** server. The agents are containerised Python services that drive the official
 **Anthropic SDK** tool-use loop; the MCP server speaks the real
 **MCP Streamable HTTP** transport (official `mcp` Python SDK) over OAuth 2.1
 Bearer tokens.
 
-The three patterns differ only in *how the agent obtains its access token*:
+The four patterns differ in *how the agent obtains its access token* and
+*whose identity is in the token*:
 
-| # | Use case | Auth mechanism | Key freshness | Demo container |
+| # | Use case | Auth mechanism | Identity in token | Demo container |
 |---|----------|----------------|---------------|----------------|
-| UC1 | **Client Secret** | OAuth 2.0 Client Credentials (RFC 6749 §4.4) | Static secret | `agent-secret` (:9001) |
-| UC2 | **SPIFFE Workload Identity** | SPIRE attestation → RFC 7523 `private_key_jwt` | Ephemeral key per restart | `agent-spiffe` (:9002) |
-| UC3a | **X.509 Certificate** | CA-issued cert → RFC 7523 `private_key_jwt` | Long-lived cert + key | `agent-cert` (:9003) |
+| UC1 | **Client Secret** | OAuth 2.0 Client Credentials (RFC 6749 §4.4) | `sub` = service account | `agent-secret` (:9001) |
+| UC2 | **SPIFFE Workload Identity** | SPIRE attestation → RFC 7523 `private_key_jwt` | `sub` = service account | `agent-spiffe` (:9002) |
+| UC3a | **X.509 Certificate** | CA-issued cert → RFC 7523 `private_key_jwt` | `sub` = service account | `agent-cert` (:9003) |
+| UC4 | **User-Delegated (OBO + Rescope)** | RFC 8693 Token Exchange | `sub` = **the human user**; `act` = agent | `agent-delegated` (:9004) |
 
-The MCP server (`mcp-service` on port 8003) is the same for all three. The
-agents all run the same task against the same tools — only the credential
-machinery changes.
+The MCP server (`mcp-service` on port 8003) is the same for all four. The
+agents all run the same task against the same tools — only the
+credential machinery and (for UC4) the identity model change.
 
 ---
 
@@ -150,14 +152,18 @@ remains tightly coupled to the existing OAuth2 demos.
 
 ## The agent tool-use loop
 
-All three agents run the same loop, abstracted from the credential mechanism:
+All four agents run the same loop after the authentication step.  Only the
+"Auth — varies by use case" lane in the diagram differs: UC1 does Client
+Credentials, UC2 attests via SPIRE then exchanges a `client_assertion`, UC3a
+loads a cert from a volume and exchanges a `client_assertion`, UC4 performs
+an RFC 8693 token exchange using the user's token as the subject.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as User
     participant F as Flask /agentic
-    participant A as Agent (UC1/UC2/UC3a)
+    participant A as Agent (any UC)
     participant KC as Keycloak
     participant M as MCP Service
     participant CL as Claude API
@@ -378,6 +384,156 @@ docker compose up -d        # cert-init regenerates everything
 open http://localhost:5000/agentic/cert
 curl -s -X POST http://localhost:9003/run | jq
 ```
+
+---
+
+---
+
+## UC4 — User-Delegated (OBO + Rescoping)
+
+The first three use cases authenticate the agent as **itself** — a service
+principal with its own service account.  UC4 inverts this: a logged-in
+human delegates a task to the agent, and the agent obtains a token that
+**preserves the user's identity** while restricting the scope.
+
+### Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as alice (browser)
+    participant CA as client-app :5000
+    participant A as agent-delegated :9004
+    participant KC as Keycloak
+    participant M as MCP Service
+
+    U->>CA: GET /auth/authorization-code
+    CA->>KC: Authorization Code flow
+    KC-->>CA: T0 (sub=alice, azp=demo-client,<br/>aud includes ai-agent-delegated,<br/>scope=openid profile email roles)
+    CA->>U: Logged in
+    U->>CA: Click "Run Agent on My Behalf"
+    CA->>A: POST /run<br/>{ "user_access_token": T0 }
+    Note over A: Single RFC 8693 exchange<br/>combines OBO + scope narrowing
+    A->>KC: POST /token<br/>grant_type=token-exchange<br/>subject_token=T0<br/>client_id=ai-agent-delegated<br/>client_secret=…<br/>scope=mcp
+    KC->>KC: Validate T0 (audience contains<br/>ai-agent-delegated)<br/>Apply mcp scope mappers<br/>Add act claim
+    KC-->>A: T1 (sub=alice, azp=ai-agent-delegated,<br/>act={sub: ai-agent-delegated},<br/>scope=mcp, aud=mcp-service)
+    A->>M: MCP session with Bearer T1
+    Note over M: Logs custody chain:<br/>"subject=alice actors=ai-agent-delegated"
+    M-->>A: tools/list, then tool calls
+    A->>A: Anthropic tool-use loop<br/>(system: "you act on behalf of alice")
+    A-->>CA: AgentRun trace + custody summary + scope diff
+    CA-->>U: Render result page
+```
+
+### What's preserved, what's added, what's dropped
+
+A side-by-side diff of T0 (the user's login token) and T1 (the delegated
+token the agent uses for MCP):
+
+| Claim | T0 (user) | T1 (delegated) | Change |
+|-------|-----------|----------------|--------|
+| `sub` | `<alice's UUID>` | `<alice's UUID>` | **Preserved** |
+| `azp` | `demo-client` | `ai-agent-delegated` | Changed — the actor |
+| `act` | (absent) | (absent — see note below) | — |
+| `azp` (effective actor) | `demo-client` | **`ai-agent-delegated`** | **The acting party** |
+| `scope` | `openid profile email roles` | `mcp` | **Narrowed** |
+| `aud` | `[demo-client, middle-tier-client, ai-agent-delegated]` | `[mcp-service]` | Narrowed |
+| `realm_access.roles` | `[admin-role, user-role]` | (absent) | **Dropped** with the roles scope |
+
+The dropped roles claim is the **point** of rescoping: even though alice is
+an admin, the token the agent holds cannot perform admin actions because the
+roles scope was not requested in the exchange.  This is the principle of
+least privilege.
+
+> **Note on the `act` claim.**  RFC 8693 §4.1 specifies that the resulting
+> token's `act` claim names the actor.  In practice, **Keycloak 26's V2
+> (standard) token exchange does not emit `act` by default** for single-hop
+> exchanges — instead it sets `azp` to the exchanging client and leaves the
+> custody trail there.  Adding a literal `act` claim would require a custom
+> protocol mapper (Keycloak SPI work).
+>
+> The MCP audit log and the agent's custody display both fall back to `azp`
+> when `act` is absent **AND** the subject is a human user
+> (`preferred_username` doesn't start with `service-account-`).  This
+> preserves the audit information; only the claim name differs.  Nested
+> multi-hop exchanges (alice → middle-tier → agent) would emit `act`
+> properly and the code walks that chain correctly.
+
+### Prerequisites
+
+- Keycloak client `ai-agent-delegated`:
+  - `clientAuthenticatorType=client-secret` (confidential)
+  - `serviceAccountsEnabled=true` (Keycloak requires this for token-exchange
+    initiator clients)
+  - `standard.token.exchange.enabled=true` attribute
+- Audience mapper on `demo-client`: adds `ai-agent-delegated` to `aud` of
+  alice's tokens so the exchange is permitted (Keycloak rejects exchanges
+  where the exchanging client isn't in the subject_token's audience)
+- `mcp` client scope assigned as **optional** to `ai-agent-delegated`
+- **No `mcp-user` role** on the service account — the resulting token's
+  identity is the user, not the service account.  The MCP server validates
+  scope + audience but does not enforce roles, so this is enough.
+
+### What makes this UC4
+
+- The agent acts as an **intermediary**, not an actor in its own right.
+- The MCP server's audit logs attribute every tool call back to BOTH the
+  user (subject) and the agent (actor in the act chain).
+- The token's scope is strictly narrower than the user's original — the
+  agent literally cannot do things outside the delegated scope, even
+  though the user could.
+- Compromising the agent only exposes the narrow scope. The user's broader
+  permissions remain untouched.
+
+### MCP server audit logging
+
+Every accepted Bearer token is logged with its custody chain. Watch the
+mcp-service container while running UC4:
+
+```bash
+docker logs -f oauth2-mcp-service | grep "MCP token accepted"
+```
+
+Sample output for a UC4 run:
+
+```
+MCP token accepted — subject=alice actors=ai-agent-delegated scope=profile email mcp azp=ai-agent-delegated
+```
+
+Compare to UC1's direct service-principal access (no delegation):
+
+```
+MCP token accepted — subject=service-account-ai-agent-secret (direct, no delegation) scope=profile email mcp azp=ai-agent-secret
+```
+
+The single line tells you exactly who acted, on whose behalf, and with
+what authorization — the full custody chain in one place.
+
+### Run
+
+```bash
+# Log in first (any of the three test accounts works — alice has the most roles)
+open http://localhost:5000/auth/authorization-code
+
+# Then trigger the delegated agent
+open http://localhost:5000/agentic/user-delegated-rescope
+
+# Or via curl (after logging in — copy the access token from /token/inspect)
+curl -s -X POST http://localhost:9004/run \
+     -H "Content-Type: application/json" \
+     -d "{\"user_access_token\": \"$T0\"}" | jq
+```
+
+### UC4 versus UC1/UC2/UC3a
+
+| Question | UC1/UC2/UC3a (service principal) | UC4 (user-delegated) |
+|----------|----------------------------------|---------------------|
+| Who needs to be logged in? | Nobody | The human user |
+| What is `sub` in the MCP-bound token? | The agent's service account | The user |
+| What is in the `act` claim? | (absent) | The agent |
+| What grant type to Keycloak? | `client_credentials` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| Can the agent be more privileged than the user? | Yes (its own scope/roles) | No (strictly bounded by user's permissions + the requested scope) |
+| Suitable for | Background jobs, scheduled tasks, infrastructure-to-infrastructure | AI assistants, copilots, "agent acts as me" features |
 
 ---
 

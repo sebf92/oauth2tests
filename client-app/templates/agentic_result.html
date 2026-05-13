@@ -59,6 +59,35 @@
 
 {% if run %}
 
+{# ── Step −1 (user-delegated agent only): the human's identity ─────────────── #}
+{% if run.user_identity %}
+<h5 class="section-title">
+  <span class="badge bg-dark me-2"><i class="bi bi-person-fill"></i></span>Delegating User
+</h5>
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <p class="mb-3 small text-muted">
+      Decoded from the user's access token (T0) — the human principal whose
+      identity will be preserved through the upcoming token exchange.
+    </p>
+    <table class="table table-sm small mb-0">
+      <tr><td class="text-muted" style="width:160px">Username</td>
+          <td><strong>{{ run.user_identity.username }}</strong></td></tr>
+      <tr><td class="text-muted">Email</td><td>{{ run.user_identity.email or '—' }}</td></tr>
+      <tr><td class="text-muted">sub</td><td><code>{{ run.user_identity.sub }}</code></td></tr>
+      <tr><td class="text-muted">azp (originating client)</td>
+          <td><code>{{ run.user_identity.azp }}</code></td></tr>
+      <tr><td class="text-muted">scope</td><td><code>{{ run.user_identity.scope }}</code></td></tr>
+      <tr><td class="text-muted">realm_access.roles</td><td>
+        {% for r in run.user_identity.realm_roles %}
+          <span class="badge bg-{{ 'danger' if 'admin' in r else 'primary' }} me-1">{{ r }}</span>
+        {% else %}<span class="text-muted">(none)</span>{% endfor %}
+      </td></tr>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 {# ── Step 0 (cert agent only): X.509 certificate metadata ──────────────────── #}
 {% if run.cert %}
 <h5 class="section-title">
@@ -221,6 +250,78 @@
     {% endif %}
   </div>
 </div>
+
+{# ── Step 1.5 (user-delegated only): custody chain + scope diff ─────────────── #}
+{% if run.custody or run.scope_diff %}
+<h5 class="section-title">
+  <span class="badge bg-info me-2"><i class="bi bi-link-45deg"></i></span>Custody Chain &amp; Scope Diff
+</h5>
+<div class="row g-3 mb-4">
+
+  {% if run.custody %}
+  <div class="col-md-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <h6 class="small text-muted text-uppercase mb-3">Audit trail (RFC 8693 act claim)</h6>
+        <div class="p-3 bg-light rounded mb-3">
+          <code style="font-size:.9rem">{{ run.custody.summary }}</code>
+        </div>
+        <table class="table table-sm small mb-0">
+          <tr><td class="text-muted" style="width:120px">Subject (for)</td>
+              <td><code>{{ run.custody.subject }}</code></td></tr>
+          <tr><td class="text-muted">Actor chain</td>
+              <td>
+                {% for a in run.custody.actors %}
+                  <span class="badge bg-info text-white me-1">{{ a }}</span>
+                {% else %}
+                  <span class="text-muted">(direct — no delegation)</span>
+                {% endfor %}
+              </td></tr>
+        </table>
+        <p class="small text-muted mt-3 mb-0">
+          <i class="bi bi-info-circle me-1"></i>The MCP server logs this chain
+          for every accepted request. See <code>docker logs oauth2-mcp-service</code>.
+        </p>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if run.scope_diff %}
+  <div class="col-md-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <h6 class="small text-muted text-uppercase mb-3">Scope narrowing</h6>
+        <div class="mb-3">
+          <div class="small text-muted">User token (T0)</div>
+          <div class="p-2 bg-light rounded font-monospace small">
+            {% for s in run.scope_diff.user_scopes %}<span class="badge bg-secondary me-1">{{ s }}</span>{% endfor %}
+          </div>
+        </div>
+        <div class="mb-3">
+          <div class="small text-muted">Delegated token (T1)</div>
+          <div class="p-2 bg-light rounded font-monospace small">
+            {% for s in run.scope_diff.delegated_scopes %}<span class="badge bg-info me-1">{{ s }}</span>{% endfor %}
+          </div>
+        </div>
+        <table class="table table-sm small mb-0">
+          <tr><td class="text-muted" style="width:80px">Kept</td><td>
+            {% for s in run.scope_diff.kept %}<span class="badge bg-success me-1">{{ s }}</span>{% else %}<span class="text-muted">none</span>{% endfor %}
+          </td></tr>
+          <tr><td class="text-muted">Dropped</td><td>
+            {% for s in run.scope_diff.dropped %}<span class="badge bg-danger me-1">{{ s }}</span>{% else %}<span class="text-muted">none</span>{% endfor %}
+          </td></tr>
+          <tr><td class="text-muted">Added</td><td>
+            {% for s in run.scope_diff.added %}<span class="badge bg-warning text-dark me-1">{{ s }}</span>{% else %}<span class="text-muted">none</span>{% endfor %}
+          </td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endif %}
 
 {# ── Step 2: MCP discovery ───────────────────────────────────────────────────── #}
 <h5 class="section-title">
