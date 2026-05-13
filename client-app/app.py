@@ -1,44 +1,61 @@
 """
-Client Application — Flask OAuth2 demo.
+Client Application — Flask OAuth2 / OIDC learning demo.
 
-Demonstrates three OAuth2 grant types and eight advanced flows:
-  1. Authorization Code Flow  — the standard, browser-redirect-based flow
-  2. Resource Owner Password Credentials (ROPC) — direct username/password exchange
-  3. Client Credentials — machine-to-machine, no user involved
-  4. On-Behalf-Of (OBO) — RFC 8693 token exchange, middle tier acts on behalf of user
-  5. Token Rescoping — RFC 8693 downscoping, strip roles from a token
-  6. SPIFFE/SPIRE — workload identity: RFC 7523 private_key_jwt → resource server
-  7. OIDC Identity Layer — id_token, UserInfo endpoint, Discovery document
-  8. DPoP — RFC 9449 proof of possession, sender-constrained tokens
-  9. Device Authorization Grant — RFC 8628 device code flow for browserless clients
- 10. PKCE — RFC 7636 proof key for code exchange, public client hardening
- 11. Token Introspection — RFC 7662 remote active/revoked token state lookup
+Demonstrates eleven flows across the OAuth2 / OpenID Connect family:
 
-After obtaining a token, the app uses it to call the protected Resource Server
-and shows the raw + decoded JWT to help understand what is inside the token.
+  # Grant type         RFC               When to use
+  ─────────────────────────────────────────────────────────────────────────────
+  1  Authorization Code  RFC 6749 §4.1   Any web app where a human logs in
+  2  ROPC                RFC 6749 §4.3   Scripts / CLIs only — avoid in prod
+  3  Client Credentials  RFC 6749 §4.4   Service-to-service, no user session
+  4  On-Behalf-Of        RFC 8693        Middle tier propagates user identity
+  5  Token Rescoping     RFC 8693        Strip roles for least-privilege forwarding
+  6  SPIFFE private_key_jwt  RFC 7523    Workload identity, no static secret
+  7  OIDC identity layer OIDC Core       id_token, UserInfo, Discovery
+  8  DPoP                RFC 9449        Sender-constrained tokens (replay-proof)
+  9  Device Auth Grant   RFC 8628        Browserless / IoT devices
+ 10  PKCE                RFC 7636        Public clients without a client_secret
+ 11  Token Introspection RFC 7662        Real-time active/revoked state from AS
 
-URL layout:
-  /                               Home page (shows session, flow buttons, API demo)
-  /auth/authorization-code        Start Authorization Code flow (redirect to Keycloak)
-  /auth/callback                  OAuth2 redirect_uri handler
-  /auth/password                  Password Grant form (GET shows form, POST submits it)
-  /auth/client-credentials        Client Credentials grant (one-click)
-  /auth/token-exchange/obo        On-Behalf-Of token exchange demo (RFC 8693)
-  /auth/token-exchange/rescope    Token downscoping / rescoping demo (RFC 8693)
-  /auth/spiffe                    SPIFFE workload identity → OAuth2 demo
-  /auth/dpop                      DPoP proof of possession demo (RFC 9449)
-  /auth/oidc                      OIDC identity layer demo (id_token, UserInfo, Discovery)
-  /auth/device                    Device Authorization Grant demo (RFC 8628)
-  /auth/device/poll               AJAX polling endpoint for device flow status
-  /auth/pkce                      Start PKCE Authorization Code flow (RFC 7636)
-  /auth/pkce/result               PKCE result page (after Keycloak callback)
-  /auth/introspect                Token Introspection demo (RFC 7662)
+After obtaining a token each flow calls the protected Resource Server at :8001
+and shows the raw JWT alongside the decoded header/payload so readers can see
+exactly what Keycloak put inside each token type.
+
+Dual-URL convention used throughout this file
+─────────────────────────────────────────────
+KC_EXT  Browser-facing URL (localhost:8080, port-mapped from Docker to the host).
+        Used for all URLs the browser must follow: auth redirect, logout redirect.
+KC_INT  Server-facing URL (keycloak:8080, Docker-internal DNS).
+        Used for all server-to-server calls: token endpoint, introspection, JWKS.
+        KC_INT is not reachable from outside Docker; KC_EXT is not guaranteed
+        to be reachable from inside Docker (depends on host networking).
+        KC_HOSTNAME=localhost ensures Keycloak publishes its token endpoint as
+        http://localhost:8080/... so id_token iss/aud and OIDC discovery always
+        reference the external URL, matching what browsers and JWT validators expect.
+
+URL layout
+──────────
+  /                               Home page (session state, flow buttons, API demo)
+  /auth/authorization-code        Start Authorization Code flow
+  /auth/callback                  Shared OAuth2 redirect_uri (Auth Code + PKCE)
+  /auth/password                  ROPC form (GET shows form, POST submits it)
+  /auth/client-credentials        Client Credentials grant
+  /auth/token-exchange/obo        On-Behalf-Of token exchange demo
+  /auth/token-exchange/rescope    Token downscoping demo
+  /auth/spiffe                    SPIFFE workload identity demo (proxy to :8002)
+  /auth/dpop                      DPoP proof-of-possession demo
+  /auth/oidc                      OIDC identity layer (id_token, UserInfo, Discovery)
+  /auth/device                    Device Authorization Grant demo
+  /auth/device/poll               AJAX polling endpoint for device flow
+  /auth/pkce                      Start PKCE Authorization Code flow
+  /auth/pkce/result               PKCE result page
+  /auth/introspect                Token Introspection + revocation demo
   /auth/refresh                   Refresh the current access token
-  /auth/logout                    Clear session + SSO logout from Keycloak
-  /token/inspect                  Detailed JWT inspection page
+  /auth/logout                    RP-initiated logout (clears session + Keycloak SSO)
+  /token/inspect                  Full JWT inspection page
   /api/call/<name>                Proxied calls to the Resource Server
   /docs                           Documentation index
-  /docs/<slug>                    Rendered documentation page
+  /docs/<slug>                    Rendered markdown documentation page
 """
 
 import base64
@@ -65,6 +82,7 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 
 # ── Configuration ──────────────────────────────────────────────────────────────
+# See module docstring for the KC_EXT / KC_INT dual-URL explanation.
 KC_EXT  = os.getenv("KEYCLOAK_EXTERNAL_URL", "http://localhost:8080")   # browser-facing
 KC_INT  = os.getenv("KEYCLOAK_INTERNAL_URL", "http://keycloak:8080")   # server-to-server
 REALM   = os.getenv("KEYCLOAK_REALM",         "demo")
@@ -106,7 +124,15 @@ def _b64url(data: bytes) -> str:
 
 
 def generate_dpop_keypair():
-    """Generate an ephemeral EC P-256 key pair. Returns (private_key, public_jwk_dict)."""
+    """
+    Generate an ephemeral EC P-256 key pair for a single DPoP session.
+
+    Returns (private_key, public_jwk_dict).  The key is created in memory and
+    never persisted — generating a new pair per request is intentional: DPoP
+    proof tokens carry a unique jti so they cannot be replayed, and the key pair
+    being short-lived means a stolen proof is useless after the session ends.
+    P-256 (secp256r1) is required by RFC 9449 §4 for the ES256 algorithm.
+    """
     priv = generate_private_key(SECP256R1(), default_backend())
     nums = priv.public_key().public_numbers()
     pub_jwk = {
@@ -136,11 +162,20 @@ def make_dpop_proof(
     access_token: str | None = None,
 ) -> str:
     """
-    Build a signed DPoP proof JWT (RFC 9449).
+    Build a signed DPoP proof JWT (RFC 9449 §4.2).
 
-    htm: HTTP method in uppercase ("POST", "GET", …)
-    htu: Full URI without query/fragment
-    access_token: if provided, adds the ath claim (required at resource servers)
+    htm            HTTP method in uppercase ("POST", "GET", …).
+    htu            Full URI without query string or fragment.  Keycloak validates
+                   the htu in the token-endpoint proof against the URL it actually
+                   received the request at — use KC_TOKEN_URL, not the public URL.
+    access_token   When calling a resource server, pass the access token so the
+                   ath claim (SHA-256 of the token) is included.  ath binds the
+                   proof to a specific token, preventing an attacker from reusing
+                   a captured proof with a different (stolen) access token.
+
+    Two proofs are needed per DPoP flow:
+      Proof 1 → token endpoint  (htm=POST, no ath — token not yet obtained)
+      Proof 2 → resource server (htm=GET,  ath=SHA-256(access_token))
     """
     header = {"typ": "dpop+jwt", "alg": "ES256", "jwk": pub_jwk}
     claims = {"jti": secrets.token_urlsafe(16), "htm": htm, "htu": htu, "iat": int(time.time())}
@@ -153,6 +188,9 @@ def make_dpop_proof(
 
     der_sig = priv_key.sign(signing_input, ECDSA(crypto_hashes.SHA256()))
     r, s    = decode_dss_signature(der_sig)
+    # cryptography's sign() returns ASN.1 DER. ES256 (JWA) requires the raw
+    # r || s encoding (two 32-byte big-endian integers, no framing). We extract
+    # r and s via decode_dss_signature and re-encode manually.
     raw_sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
     return f"{h_b64}.{p_b64}.{_b64url(raw_sig)}"
 
@@ -160,6 +198,7 @@ def make_dpop_proof(
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _b64_decode(s: str) -> dict:
+    """Base64url-decode a JWT segment (no padding required in the token itself)."""
     padding = 4 - len(s) % 4
     try:
         return json.loads(base64.urlsafe_b64decode(s + "=" * padding))
@@ -192,6 +231,12 @@ def decode_jwt(token: str) -> dict:
 
 
 def token_expired(token_data: dict) -> bool:
+    """Return True if the stored access token has passed its computed expiry time.
+
+    expires_at is set by the caller as time.time() + expires_in at the moment the
+    token is received.  We track it separately rather than decoding exp from the JWT
+    so that the check works even when the JWT is opaque or the clock is slightly skewed.
+    """
     return time.time() >= token_data.get("expires_at", 0)
 
 
@@ -219,6 +264,13 @@ def call_resource(path: str, token: str | None) -> dict:
 
 @app.context_processor
 def inject_user():
+    """Inject auth state into every template render.
+
+    Decodes the session's access token on each request so templates can display
+    the current user, roles, and login state without explicit view logic.
+    keycloak_url and realm are injected so templates can build admin/account links
+    without hard-coding Keycloak's address.
+    """
     td = session.get("token_data")
     username = None
     roles: list[str] = []
@@ -240,6 +292,7 @@ def inject_user():
 
 @app.route("/")
 def index():
+    """Render the home page with the current session state and API call buttons."""
     td           = session.get("token_data")
     token_info   = None
     is_expired   = False
@@ -264,7 +317,20 @@ def index():
 
 @app.route("/auth/authorization-code")
 def start_auth_code():
-    """Redirect the browser to Keycloak's authorization endpoint."""
+    """
+    Start the Authorization Code flow — RFC 6749 §4.1.
+
+    Generates CSRF and replay-protection values, stores them in the server-side
+    session, then redirects the browser to Keycloak's /auth endpoint.
+
+    state  — random value stored in session and echoed back by Keycloak in the
+             redirect to /auth/callback.  The callback rejects any response where
+             state does not match, preventing CSRF attacks on the redirect_uri.
+
+    nonce  — random value included in the auth request and embedded by Keycloak
+             inside the id_token.  The client verifies it matches after decoding
+             the id_token, preventing token replay attacks across sessions.
+    """
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     session["oauth_state"] = state
@@ -284,9 +350,20 @@ def start_auth_code():
 @app.route("/auth/callback")
 def auth_callback():
     """
-    Keycloak redirects here after the user authenticates.
-    Shared by Authorization Code (flow 1) and PKCE (flow 10).
-    Set session["pkce_flow"] = True before redirecting to trigger PKCE token exchange.
+    Handle the Keycloak redirect after user authentication — RFC 6749 §4.1.3.
+
+    This single route serves as redirect_uri for both the plain Authorization Code
+    flow (flow 1) and the PKCE flow (flow 10).  The flows share the same callback
+    URL because Keycloak requires redirect_uri to match exactly what was registered
+    for the client.  The session flag pkce_flow=True switches the token exchange
+    logic to use pkce-client (public, no secret) and include code_verifier.
+
+    Security checks performed here:
+      • Error param  — propagated back to the user if Keycloak rejected the request.
+      • state match  — verifies the returned state equals the value we stored before
+                       redirecting, preventing CSRF on the redirect_uri endpoint.
+      • code         — the short-lived one-time authorization code issued by Keycloak,
+                       exchanged server-side for tokens (never exposed in the browser).
     """
     if err := request.args.get("error"):
         flash(f"Keycloak error: {request.args.get('error_description', err)}", "danger")
@@ -306,13 +383,17 @@ def auth_callback():
 
     token_payload = {
         "grant_type":   "authorization_code",
+        # redirect_uri must exactly match the value sent in the authorization request;
+        # Keycloak validates it as a security measure before issuing tokens.
         "redirect_uri": REDIRECT_URI,
         "code":         code,
     }
     if pkce_mode and pkce_verifier:
         token_payload["client_id"]     = PKCE_CLIENT_ID
         token_payload["code_verifier"] = pkce_verifier
-        # public client — no client_secret
+        # pkce-client is a public client (no secret).  The code_verifier replaces
+        # the client_secret as proof that this token request originates from the
+        # same party that initiated the authorization request.
     else:
         token_payload["client_id"]     = CLIENT_ID
         token_payload["client_secret"] = CLIENT_SECRET
@@ -347,6 +428,20 @@ def auth_callback():
 
 @app.route("/auth/password", methods=["GET", "POST"])
 def password_grant():
+    """
+    Resource Owner Password Credentials (ROPC) grant — RFC 6749 §4.3.
+
+    The client submits the user's plaintext credentials directly to the token
+    endpoint; there is no browser redirect.  Useful for scripts and CLIs where
+    a redirect flow is impractical, but avoided in production web apps because:
+      • The client application sees and handles the user's password directly.
+      • It cannot support MFA, external identity providers, or consent screens.
+      • RFC 9700 (OAuth 2.0 Security BCP) recommends against ROPC entirely.
+
+    Requires directAccessGrantsEnabled: true on the Keycloak client (set in
+    realm-export.json).  Keycloak will still validate credentials against the
+    same user store, apply brute-force protection, and issue a full token set.
+    """
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
@@ -384,7 +479,21 @@ def password_grant():
 
 @app.route("/auth/client-credentials")
 def client_credentials():
-    """Obtain a token on behalf of the service account — no user involved."""
+    """
+    Client Credentials grant — RFC 6749 §4.4.
+
+    Authenticates the application itself (service-client) rather than a user.
+    Keycloak issues a token for the service account attached to service-client.
+
+    Key differences from user tokens:
+      • No id_token in the response — service accounts have no user identity.
+      • No refresh_token — service accounts have no SSO session to maintain;
+        a new token is obtained by repeating the client_credentials request.
+      • sub is the service account's UUID, not a user UUID.
+      • preferred_username is "service-account-<client_id>".
+
+    Typical use: microservice calling another microservice without user context.
+    """
     resp = requests.post(
         KC_TOKEN_URL,
         data={
@@ -414,14 +523,23 @@ def client_credentials():
 @app.route("/auth/token-exchange/obo")
 def token_exchange_obo():
     """
-    On-Behalf-Of (OBO) demo.
+    On-Behalf-Of (OBO) token exchange — RFC 8693.
 
-    The middle-tier-client exchanges the current user's token for a new token
-    that represents the same user but is issued to the middle-tier service.
-    This lets middle-tier services propagate user identity downstream without
-    storing or forwarding the original credentials.
+    middle-tier-client exchanges the authenticated user's token for a new token
+    that carries the same user identity (sub unchanged) but is issued to the
+    middle-tier service (azp = middle-tier-client).  An act claim is added to the
+    delegated token recording that middle-tier-client performed the exchange,
+    creating an auditable delegation chain.
 
-    RFC 8693 grant_type: urn:ietf:params:oauth:grant-type:token-exchange
+    This pattern lets a middle-tier service call downstream APIs on behalf of the
+    user without ever seeing or forwarding the original credentials or token.
+
+    Prerequisites (both must be in place — configured by keycloak-init at startup):
+      1. standard.token.exchange.enabled = true on middle-tier-client
+         (KC 26.2+ GA, no feature flags; set via Admin REST API).
+      2. middle-tier-client listed in the aud claim of the subject token
+         (configured via an audience mapper in realm-export.json).
+         Without this, Keycloak rejects the exchange: "token is not in the audience".
     """
     td = session.get("token_data")
     if not td:
@@ -437,6 +555,7 @@ def token_exchange_obo():
     resp = requests.post(
         KC_TOKEN_URL,
         data={
+            # RFC 8693 standard token exchange grant type (KC 26.2+ GA)
             "grant_type":           "urn:ietf:params:oauth:grant-type:token-exchange",
             "client_id":            MIDDLE_CLIENT_ID,
             "client_secret":        MIDDLE_CLIENT_SECRET,
@@ -470,14 +589,20 @@ def token_exchange_obo():
 @app.route("/auth/token-exchange/rescope")
 def token_exchange_rescope():
     """
-    Token rescoping (downscoping) demo.
+    Token downscoping (rescoping) — RFC 8693.
 
-    demo-client exchanges its own token for a new one with a narrower scope —
-    the 'roles' scope is intentionally omitted so realm_access.roles disappears
-    from the new token.  This lets a service hand a third party a token that can
-    only do a limited subset of what the original token could do.
+    demo-client exchanges its own access token for a new token with a narrower
+    scope list.  By omitting the 'roles' scope from the requested scope, the
+    resulting token contains no realm_access.roles claim — the downstream service
+    receiving this token cannot use it to perform role-protected operations even
+    if it is compromised.
 
-    RFC 8693 grant_type: urn:ietf:params:oauth:grant-type:token-exchange
+    This implements the least-privilege forwarding pattern: a middle tier holds
+    a powerful token (e.g. admin-role) but passes only a weak, scope-limited token
+    to the components that do not need elevated access.
+
+    Requires standard.token.exchange.enabled = true on demo-client (set by
+    keycloak-init alongside middle-tier-client at startup).
     """
     td = session.get("token_data")
     if not td:
@@ -499,7 +624,9 @@ def token_exchange_rescope():
             "subject_token":        original_token,
             "subject_token_type":   "urn:ietf:params:oauth:token-type:access_token",
             "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
-            # Deliberately omit 'roles' → the new token will have no realm_access.roles
+            # Omitting 'roles' causes Keycloak to exclude the realm_access.roles claim
+            # entirely from the new token.  The scope list controls which protocol
+            # mappers run; the roles mapper only fires when the 'roles' scope is present.
             "scope":                "openid email profile",
         },
         timeout=10,
@@ -528,15 +655,23 @@ def token_exchange_rescope():
 @app.route("/auth/spiffe")
 def spiffe_demo():
     """
-    Proxy the full SPIFFE → OAuth2 → Resource Server demo from the spiffe-service.
+    Proxy the SPIFFE workload identity demo from the spiffe-service container.
 
-    The spiffe-service container holds the SPIRE agent socket and performs:
-      1. Fetch JWT-SVID from SPIRE workload API (proves container identity)
-      2. Validate SPIFFE identity locally
-      3. Map SPIFFE ID → Keycloak service account (bridge pattern)
-      4. Call the protected resource server with the resulting OAuth2 token
+    The spiffe-service holds the SPIRE agent unix socket and must run in the
+    agent's PID namespace (pid: "service:spire-agent" in docker-compose.yml) so
+    the SPIRE unix WorkloadAttestor can identify it by OS UID.  The four-step
+    flow it executes:
+      1. Fetch a JWT-SVID from the SPIRE Workload API (proves container identity
+         via runtime attestation — no static credentials involved).
+      2. Build an RFC 7523 client_assertion JWT signed with the service's own
+         ephemeral EC key (generated in memory at startup, never persisted).
+      3. POST to Keycloak's token endpoint using grant_type=client_credentials
+         and client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer.
+         Keycloak validates the assertion by fetching GET /jwks from spiffe-service.
+      4. Call the Resource Server API with the resulting OAuth2 access token.
 
-    We just proxy the /demo endpoint result here and render it nicely.
+    This app merely proxies GET /demo and renders the structured JSON result.
+    The actual SPIFFE logic lives in spiffe-service/main.py.
     """
     try:
         resp = requests.get(f"{SPIFFE_URL}/demo", timeout=15)
@@ -560,17 +695,26 @@ def dpop_demo():
     DPoP (Demonstrating Proof of Possession) demo — RFC 9449.
 
     Generates an ephemeral EC P-256 key pair, performs a Password Grant for alice
-    using a DPoP-bound request (so the token contains cnf.jkt), then calls the
-    DPoP-protected resource server endpoint with a second proof.
+    with a DPoP-bound token request, then calls the DPoP-protected resource server
+    endpoint with a second proof.  The demo is self-contained and does not depend
+    on an existing browser session.
 
-    The private key is used in-place and never stored — the demo is fully self-contained
-    and does not depend on an existing session.
+    How DPoP prevents Bearer token theft:
+      A plain Bearer token can be replayed by anyone who intercepts it.  DPoP binds
+      the token to a specific key pair: the access token contains a cnf.jkt claim
+      (JWK thumbprint of the ephemeral public key).  Every request must be accompanied
+      by a signed DPoP proof that includes the HTTP method and URL, so a stolen token
+      is useless without the matching private key.
+
+    Requires Keycloak 26.4+ (DPoP GA) and dpop.bound.access.tokens: true on
+    dpop-client (provisioned by keycloak-init).
     """
     priv, pub_jwk = generate_dpop_keypair()
     jkt = jwk_thumbprint(pub_jwk)
 
-    # DPoP proof for the token endpoint. htu must match the URL we actually POST to —
-    # Keycloak builds the expected htu from the received request URI, not from KC_HOSTNAME.
+    # Proof 1 of 2: for the token endpoint.
+    # htu must match the URL Keycloak actually receives — use KC_TOKEN_URL (internal).
+    # Keycloak compares htu against its own request URI, not its published KC_HOSTNAME URL.
     token_htu   = KC_TOKEN_URL
     token_proof = make_dpop_proof(priv, pub_jwk, "POST", token_htu)
     token_proof_info = decode_jwt(token_proof)
@@ -602,7 +746,10 @@ def dpop_demo():
         dpop_access_token = token_result["data"].get("access_token", "")
         dpop_token_info   = decode_jwt(dpop_access_token)
 
-        api_url    = f"{RESOURCE_URL}/api/dpop-protected"
+        api_url = f"{RESOURCE_URL}/api/dpop-protected"
+        # Proof 2 of 2: for the resource server call.  access_token is passed so
+        # make_dpop_proof adds the ath (access token hash) claim — required by RFC 9449
+        # §4.2 for resource server requests to bind the proof to this specific token.
         api_proof  = make_dpop_proof(priv, pub_jwk, "GET", api_url, access_token=dpop_access_token)
         api_proof_info = decode_jwt(api_proof)
 
@@ -713,11 +860,20 @@ def oidc_demo():
 @app.route("/auth/device")
 def device_flow():
     """
-    Device Authorization Grant demo — RFC 8628.
+    Device Authorization Grant — RFC 8628.
 
-    Calls Keycloak's device authorization endpoint to obtain a device_code and
-    user_code. The template polls /auth/device/poll via JavaScript every N seconds
-    until the user approves the request at the verification_uri.
+    Designed for devices that cannot display a browser (TVs, CLIs, IoT).  The
+    device obtains a device_code and user_code from Keycloak, then displays the
+    user_code and verification_uri to the user.  The user opens the URI on a
+    separate device (phone, laptop), enters the code, and authenticates.  Meanwhile
+    the device polls /auth/device/poll until Keycloak grants the token.
+
+    Polling states returned by Keycloak:
+      authorization_pending — user has not acted yet; wait interval seconds and retry
+      slow_down             — polling too fast; add 5 s to interval and retry
+      expired_token         — device_code expired; restart the flow
+      access_denied         — user rejected; stop polling
+      200 OK                — user approved; token issued
     """
     resp = requests.post(
         KC_DEVICE_URL,
@@ -732,8 +888,9 @@ def device_flow():
                                error_info={"status_code": resp.status_code, "data": device_data},
                                device_data=None)
 
-    # Replace the internal KC hostname with the browser-accessible one so the
-    # verification_uri link works when the user clicks it.
+    # Keycloak returns verification_uri using KC_INT (the server's own hostname).
+    # Replace with KC_EXT so the link is clickable from the user's browser outside
+    # Docker.  The path and query string are not affected by this substitution.
     for key in ("verification_uri", "verification_uri_complete"):
         if key in device_data:
             device_data[key] = device_data[key].replace(KC_INT, KC_EXT)
@@ -747,7 +904,17 @@ def device_flow():
 
 @app.route("/auth/device/poll")
 def device_poll():
-    """AJAX endpoint polled by the device demo page. Returns JSON status."""
+    """
+    AJAX polling endpoint for the Device Authorization Grant flow.
+
+    The template calls this every interval seconds (as told by Keycloak in the
+    initial device authorization response).  Returns a JSON object with a status
+    field that the client-side JavaScript maps to a UI state:
+      authorization_pending — still waiting; keep polling
+      slow_down             — polling too fast; JS must increase the interval
+      expired / error       — terminal states; stop polling and show an error
+      success               — token received; render the decoded JWT claims
+    """
     device_code = session.get("device_code")
     if not device_code:
         return jsonify({"status": "error", "error": "no_device_session",
@@ -798,12 +965,24 @@ def pkce_flow():
     """
     Start a PKCE-protected Authorization Code flow — RFC 7636.
 
-    Generates an ephemeral code_verifier, derives its S256 challenge, stores both
-    in the session, then redirects to Keycloak.  The callback detects pkce_flow=True
-    and includes the verifier in the token exchange.  The result is shown on
-    /auth/pkce/result.
+    PKCE (Proof Key for Code Exchange) allows public clients — apps that cannot
+    safely hold a client_secret (SPAs, mobile apps, CLIs) — to use the
+    Authorization Code flow securely.  It works by binding the authorization
+    request to the token exchange through a one-time cryptographic challenge:
+
+      code_verifier   32 random bytes, base64url-encoded.  Kept secret in session.
+      code_challenge  BASE64URL(SHA-256(code_verifier)).  Sent to Keycloak upfront.
+
+    At the token exchange step, the verifier is sent instead of a client_secret.
+    Keycloak recomputes SHA-256(verifier) and matches it against the stored challenge
+    — only the party that initiated the authorization request can complete it.
+
+    pkce-client is configured with pkce.code.challenge.method=S256 in Keycloak,
+    which makes PKCE mandatory for that client (plain-text challenges are rejected).
     """
     code_verifier  = _b64url(secrets.token_bytes(32))
+    # The verifier is base64url-encoded so it contains only URI-safe characters;
+    # passing raw random bytes as a form field would corrupt them at transport.
     code_challenge = _b64url(hashlib.sha256(code_verifier.encode()).digest())
 
     state = secrets.token_urlsafe(32)
@@ -941,6 +1120,18 @@ def introspect_demo():
 
 @app.route("/auth/refresh")
 def refresh_token():
+    """
+    Exchange the stored refresh_token for a fresh access_token — RFC 6749 §6.
+
+    Refresh tokens are only issued for interactive flows (Authorization Code,
+    ROPC, PKCE, DPoP).  Client Credentials tokens have no session and therefore
+    no refresh token; calling this route when only a service-account token is in
+    the session will show a warning.
+
+    After a successful refresh Keycloak also rotates the refresh token: the old
+    refresh token is invalidated and a new one is issued.  The response is stored
+    back into the session, preserving the original flow name with " (refreshed)".
+    """
     td = session.get("token_data")
     if not td or "refresh_token" not in td:
         flash("No refresh token available.", "warning")
@@ -975,11 +1166,21 @@ def refresh_token():
 
 @app.route("/auth/logout")
 def logout():
+    """
+    Clear the Flask session and terminate the Keycloak SSO session (when possible).
+
+    RP-initiated logout (OpenID Connect RP-Initiated Logout 1.0) redirects the
+    browser to Keycloak's end_session endpoint with id_token_hint so Keycloak can
+    identify and terminate the correct SSO session without prompting the user.
+    After Keycloak ends the session it redirects back to post_logout_redirect_uri.
+
+    Client Credentials tokens have no id_token (service accounts have no SSO
+    session) so we skip the Keycloak redirect and just clear the local session.
+    Similarly, PKCE tokens issued to a public client include an id_token and do
+    trigger the SSO logout redirect.
+    """
     td = session.pop("token_data", None)
     flow = (td or {}).get("flow", "")
-    # Client Credentials tokens belong to a service account — there is no
-    # interactive SSO session to end in Keycloak, so skip the RP-initiated
-    # logout redirect and just clear the Flask session.
     if td and "id_token" in td and flow != "client_credentials":
         params = {
             "post_logout_redirect_uri": "http://localhost:5000/",
@@ -992,8 +1193,11 @@ def logout():
 
 # ── API calls to Resource Server ──────────────────────────────────────────────
 
+# Maps friendly URL name → (resource server path, requires_bearer_token).
+# The "public" endpoint is intentionally unprotected on the resource server to
+# demonstrate that the Flask session is not involved — any visitor can call it.
 ENDPOINT_MAP = {
-    "public":      ("/api/public",          False),   # (path, requires_token)
+    "public":      ("/api/public",          False),
     "products":    ("/api/products",         True),
     "me":          ("/api/users/me",         True),
     "users":       ("/api/users",            True),
@@ -1003,6 +1207,15 @@ ENDPOINT_MAP = {
 
 @app.route("/api/call/<name>")
 def api_call(name: str):
+    """
+    Proxy a call to a resource server endpoint by friendly name.
+
+    Looks up the path and token requirement in ENDPOINT_MAP; unknown names fall
+    back to /api/<name> with token required.  The resource server validates the
+    JWT independently — it never calls this app back.  The result (status code +
+    JSON body) is rendered in api_result.html alongside the decoded token so the
+    reader can correlate claims with what the API accepted or rejected.
+    """
     path, needs_token = ENDPOINT_MAP.get(name, (f"/api/{name}", True))
     td = session.get("token_data")
 
@@ -1031,6 +1244,14 @@ def api_call(name: str):
 
 @app.route("/token/inspect")
 def token_inspect():
+    """
+    Show fully decoded details for every token in the current session.
+
+    Decodes the access_token, refresh_token (if present), and id_token (if present)
+    side by side so the reader can compare header/payload claims across token types.
+    Useful for understanding what Keycloak puts into each token type and how they
+    differ (e.g. id_token is for the client, access_token is for resource servers).
+    """
     td = session.get("token_data")
     if not td:
         flash("No token in session. Please log in first.", "warning")
@@ -1110,11 +1331,33 @@ except Exception:
     _PYGMENTS_CSS = ""
 
 
+# Pre-compiled regex for extracting ```mermaid … ``` fenced blocks from markdown.
 _MERMAID_FENCE_RE = _re.compile(r'```mermaid\s*\n(.*?)```', _re.DOTALL)
 
 
 def _render_doc(filename: str):
-    """Read and render a markdown file. Returns (content_html, toc_html)."""
+    """
+    Read a markdown file from DOCS_DIR and render it to HTML + TOC.
+
+    Returns (content_html, toc_html) as Markup objects (already safe for Jinja2).
+
+    Mermaid diagram pipeline
+    ────────────────────────
+    Python-markdown's fenced_code extension would turn ```mermaid blocks into
+    <pre><code> blocks, which Mermaid.js cannot process.  We must intercept them
+    before markdown runs.  The steps are:
+
+      1. _MERMAID_FENCE_RE extracts the raw diagram source from each ```mermaid block.
+      2. _html.escape() HTML-encodes the source (<, >, &, ").  This is critical:
+         angle brackets in diagram labels (e.g. <token>) would be stripped by the
+         browser HTML parser if left as-is, breaking Mermaid syntax.
+      3. The escaped source is wrapped in <div class="mermaid">...</div>.
+         Python-markdown passes block-level HTML through unchanged.
+      4. In the browser, Mermaid.js reads element.textContent, which decodes HTML
+         entities back to the original characters (&lt; → <) before parsing.
+      5. docs_page.html conditionally loads Mermaid.js (ESM CDN build) only when
+         the rendered HTML contains at least one mermaid div.
+    """
     path = os.path.join(DOCS_DIR, filename)
     try:
         with open(path, encoding="utf-8") as fh:
@@ -1125,9 +1368,6 @@ def _render_doc(filename: str):
                    f"Expected path: <code>{path}</code></p>"),
             Markup(""),
         )
-    # Convert mermaid fenced blocks to raw HTML divs before markdown processes them.
-    # Python-markdown passes block-level HTML through unchanged, so Mermaid.js
-    # on the client picks them up and renders the diagrams.
     raw = _MERMAID_FENCE_RE.sub(
         lambda m: f'<div class="mermaid">\n{_html.escape(m.group(1))}\n</div>', raw
     )
@@ -1144,11 +1384,20 @@ def _render_doc(filename: str):
 
 @app.route("/docs")
 def docs_index():
+    """Render the documentation landing page listing all entries in DOCS_MANIFEST."""
     return render_template("docs_index.html", docs=DOCS_MANIFEST)
 
 
 @app.route("/docs/<slug>")
 def docs_page(slug: str):
+    """
+    Render a single documentation page identified by slug.
+
+    Looks up the slug in DOCS_MANIFEST, reads the corresponding markdown file
+    from DOCS_DIR, converts it to HTML via _render_doc (including Mermaid and
+    Pygments syntax highlighting), and renders docs_page.html with the result.
+    all_docs is passed so the left sidebar can list all available guides.
+    """
     doc = next((d for d in DOCS_MANIFEST if d["slug"] == slug), None)
     if not doc:
         flash(f"Documentation page '{slug}' not found.", "warning")
