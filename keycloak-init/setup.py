@@ -323,6 +323,324 @@ def ensure_device_client(token: str) -> None:
         print(f"  device-client          id = {client_id} (created)")
 
 
+# ── MCP scope + Agentic AI clients ─────────────────────────────────────────────
+
+MCP_AUDIENCE = "mcp-service"   # the resource identifier the MCP server validates
+
+def ensure_mcp_user_role(token: str) -> None:
+    """Ensure the mcp-user realm role exists.
+
+    realm-export.json declares this role, but Keycloak only processes the import
+    when the realm is first created.  Existing demo installations have a realm
+    without the role, so we create it here idempotently.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    roles = _get(f"{base}/roles", h).json()
+    if any(r["name"] == "mcp-user" for r in roles):
+        print("  mcp-user role already exists")
+        return
+    r = httpx.post(
+        f"{base}/roles",
+        headers=h,
+        json={
+            "name":        "mcp-user",
+            "description": "Allowed to call the MCP service tools (Agentic AI demos)",
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    print("  ✓ mcp-user role created")
+
+
+def ensure_mcp_client_scope(token: str) -> str:
+    """
+    Create the 'mcp' client scope (if missing) with an audience mapper that adds
+    'mcp-service' to the access token's aud claim.
+
+    Returns the scope's internal Keycloak id.
+
+    Why a client scope and not a built-in role?
+      The MCP server checks BOTH the audience and a scope claim ("mcp"). A client
+      scope is the standard way to model both in Keycloak — including the scope name
+      in the access token's `scope` claim AND running protocol mappers attached to
+      that scope (here: the audience mapper).
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    existing = _get(f"{base}/client-scopes", h).json()
+    scope = next((s for s in existing if s["name"] == "mcp"), None)
+
+    if scope:
+        scope_id = scope["id"]
+        print(f"  mcp client scope        id = {scope_id} (already exists)")
+    else:
+        r = httpx.post(
+            f"{base}/client-scopes",
+            headers=h,
+            json={
+                "name":        "mcp",
+                "description": "Grant access to the MCP service (Agentic AI demos)",
+                "protocol":    "openid-connect",
+                "attributes": {
+                    # Make the scope appear in the `scope` claim so MCP can verify it.
+                    "include.in.token.scope":   "true",
+                    "display.on.consent.screen": "false",
+                },
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        scope_id = r.headers["Location"].rstrip("/").split("/")[-1]
+        print(f"  mcp client scope        id = {scope_id} (created)")
+
+    # Ensure the audience mapper exists on the mcp scope.
+    mappers = _get(f"{base}/client-scopes/{scope_id}/protocol-mappers/models", h).json()
+    if not any(m["name"] == "mcp-audience" for m in mappers):
+        r = httpx.post(
+            f"{base}/client-scopes/{scope_id}/protocol-mappers/models",
+            headers=h,
+            json={
+                "name":           "mcp-audience",
+                "protocol":       "openid-connect",
+                "protocolMapper": "oidc-audience-mapper",
+                "config": {
+                    # included.custom.audience adds a literal string to aud (vs.
+                    # included.client.audience which references another KC client).
+                    "included.custom.audience": MCP_AUDIENCE,
+                    "id.token.claim":           "false",
+                    "access.token.claim":       "true",
+                },
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        print(f"  ✓ mcp-audience mapper attached (aud += '{MCP_AUDIENCE}')")
+    else:
+        print("  mcp-audience mapper already attached")
+
+    return scope_id
+
+
+def ensure_mcp_scope_on_client(token: str, client_id_str: str, mcp_scope_id: str) -> None:
+    """Attach the mcp scope to the given client as an OPTIONAL client scope.
+
+    Optional (not default) means the agent must request `scope=mcp` explicitly when
+    obtaining a token — matching the principle of least privilege and making the
+    audience binding visible in code.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    client_list = _get(f"{base}/clients", h, params={"clientId": client_id_str}).json()
+    if not client_list:
+        print(f"  ⚠ {client_id_str} not found — skipping mcp scope assignment")
+        return
+    cid = client_list[0]["id"]
+
+    optional = _get(f"{base}/clients/{cid}/optional-client-scopes", h).json()
+    if any(s["id"] == mcp_scope_id for s in optional):
+        print(f"  mcp scope already assigned to {client_id_str}")
+        return
+
+    r = httpx.put(
+        f"{base}/clients/{cid}/optional-client-scopes/{mcp_scope_id}",
+        headers=h, timeout=10,
+    )
+    r.raise_for_status()
+    print(f"  ✓ mcp scope assigned (optional) to {client_id_str}")
+
+
+def ensure_mcp_role_on_service_account(token: str, client_id_str: str) -> None:
+    """Ensure the mcp-user realm role is assigned to a client's service account.
+
+    This is the AUTHORIZATION half of the MCP demo (the audience mapper is the
+    AUDIENCE half).  Without the role the token validates fine but the MCP server
+    will refuse the call.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    client_list = _get(f"{base}/clients", h, params={"clientId": client_id_str}).json()
+    if not client_list:
+        return
+    cid = client_list[0]["id"]
+
+    sa_user_id = _get(f"{base}/clients/{cid}/service-account-user", h).json()["id"]
+
+    roles = _get(f"{base}/roles", h).json()
+    role  = next((r for r in roles if r["name"] == "mcp-user"), None)
+    if not role:
+        print("  ⚠ mcp-user role not found — realm-export.json may be stale")
+        return
+
+    assigned = _get(f"{base}/users/{sa_user_id}/role-mappings/realm", h).json()
+    if any(r["name"] == "mcp-user" for r in assigned):
+        print(f"  mcp-user role already on {client_id_str} service account")
+        return
+    r = httpx.post(
+        f"{base}/users/{sa_user_id}/role-mappings/realm",
+        headers=h, json=[role], timeout=10,
+    )
+    r.raise_for_status()
+    print(f"  ✓ mcp-user role assigned to {client_id_str} service account")
+
+
+AGENT_SPIFFE_JWKS_URL = "http://agent-spiffe:9002/jwks"
+
+def ensure_ai_agent_spiffe_client(token: str) -> None:
+    """Ensure the ai-agent-spiffe Keycloak client exists with private_key_jwt auth.
+
+    Same pattern as spiffe-service: clientAuthenticatorType=client-jwt, jwks_url
+    pointing at the agent container.  No client_secret.  The agent's in-memory
+    EC key signs the client_assertion and Keycloak fetches the public half from
+    the agent's /jwks endpoint to verify.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    existing = _get(f"{base}/clients", h, params={"clientId": "ai-agent-spiffe"}).json()
+    if existing:
+        client    = existing[0]
+        client_id = client["id"]
+        attrs     = client.get("attributes") or {}
+        # Idempotent migration: ensure auth type and JWKS URL are correct in case
+        # the client was created by an older version of this script.
+        if (client.get("clientAuthenticatorType") != "client-jwt"
+                or attrs.get("jwks.url") != AGENT_SPIFFE_JWKS_URL):
+            client["clientAuthenticatorType"] = "client-jwt"
+            attrs["use.jwks.url"] = "true"
+            attrs["jwks.url"]     = AGENT_SPIFFE_JWKS_URL
+            client["attributes"]  = attrs
+            _put(f"{base}/clients/{client_id}", h, json=client)
+            print(f"  ai-agent-spiffe client   id = {client_id} (migrated to private_key_jwt)")
+        else:
+            print(f"  ai-agent-spiffe client   id = {client_id} (already exists)")
+        return
+
+    r = httpx.post(
+        f"{base}/clients",
+        headers=h,
+        json={
+            "clientId":                  "ai-agent-spiffe",
+            "enabled":                   True,
+            "publicClient":              False,
+            "clientAuthenticatorType":   "client-jwt",
+            "serviceAccountsEnabled":    True,
+            "standardFlowEnabled":       False,
+            "directAccessGrantsEnabled": False,
+            "protocol":                  "openid-connect",
+            "defaultClientScopes":       ["web-origins", "acr", "profile", "email"],
+            "optionalClientScopes":      ["roles"],
+            "attributes": {
+                "use.jwks.url": "true",
+                "jwks.url":     AGENT_SPIFFE_JWKS_URL,
+            },
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    cid = r.headers["Location"].rstrip("/").split("/")[-1]
+    print(f"  ai-agent-spiffe client   id = {cid} (created with private_key_jwt)")
+
+
+AGENT_CERT_JWKS_URL = "http://agent-cert:9003/jwks"
+
+def ensure_ai_agent_cert_client(token: str) -> None:
+    """Ensure the ai-agent-cert client exists with private_key_jwt + cert-backed JWK.
+
+    The key behind the JWK is itself backed by an X.509 cert (cert-init generated
+    the cert + private key onto a shared volume; the agent loads them at startup).
+    From Keycloak's point of view this is identical to the SPIFFE agent — both
+    use clientAuthenticatorType=client-jwt with jwks_url.  The interesting
+    difference (cert chain in /jwks via x5c, long-lived key, distinct identity)
+    lives entirely in the agent.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    existing = _get(f"{base}/clients", h, params={"clientId": "ai-agent-cert"}).json()
+    if existing:
+        client    = existing[0]
+        client_id = client["id"]
+        attrs     = client.get("attributes") or {}
+        if (client.get("clientAuthenticatorType") != "client-jwt"
+                or attrs.get("jwks.url") != AGENT_CERT_JWKS_URL):
+            client["clientAuthenticatorType"] = "client-jwt"
+            attrs["use.jwks.url"] = "true"
+            attrs["jwks.url"]     = AGENT_CERT_JWKS_URL
+            client["attributes"]  = attrs
+            _put(f"{base}/clients/{client_id}", h, json=client)
+            print(f"  ai-agent-cert client     id = {client_id} (migrated to private_key_jwt)")
+        else:
+            print(f"  ai-agent-cert client     id = {client_id} (already exists)")
+        return
+
+    r = httpx.post(
+        f"{base}/clients",
+        headers=h,
+        json={
+            "clientId":                  "ai-agent-cert",
+            "enabled":                   True,
+            "publicClient":              False,
+            "clientAuthenticatorType":   "client-jwt",
+            "serviceAccountsEnabled":    True,
+            "standardFlowEnabled":       False,
+            "directAccessGrantsEnabled": False,
+            "protocol":                  "openid-connect",
+            "defaultClientScopes":       ["web-origins", "acr", "profile", "email"],
+            "optionalClientScopes":      ["roles"],
+            "attributes": {
+                "use.jwks.url": "true",
+                "jwks.url":     AGENT_CERT_JWKS_URL,
+            },
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    cid = r.headers["Location"].rstrip("/").split("/")[-1]
+    print(f"  ai-agent-cert client     id = {cid} (created with private_key_jwt)")
+
+
+def ensure_ai_agent_secret_client(token: str) -> None:
+    """Ensure the ai-agent-secret client exists.
+
+    realm-export.json already declares this client when the realm is freshly
+    imported.  This function is a safety net for the case where the realm was
+    created before the Agentic AI section existed.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    existing = _get(f"{base}/clients", h, params={"clientId": "ai-agent-secret"}).json()
+    if existing:
+        print(f"  ai-agent-secret client  id = {existing[0]['id']} (already exists)")
+        return
+
+    r = httpx.post(
+        f"{base}/clients",
+        headers=h,
+        json={
+            "clientId":                  "ai-agent-secret",
+            "secret":                    "ai-agent-secret-secret",
+            "enabled":                   True,
+            "serviceAccountsEnabled":    True,
+            "standardFlowEnabled":       False,
+            "directAccessGrantsEnabled": False,
+            "publicClient":              False,
+            "protocol":                  "openid-connect",
+            "defaultClientScopes":       ["web-origins", "acr", "profile", "email"],
+            "optionalClientScopes":      ["roles"],
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    cid = r.headers["Location"].rstrip("/").split("/")[-1]
+    print(f"  ai-agent-secret client  id = {cid} (created)")
+
+
 # ── pkce-client ────────────────────────────────────────────────────────────────
 
 def ensure_pkce_client(token: str) -> None:
@@ -390,6 +708,20 @@ def main() -> None:
     token = get_admin_token()
     ensure_pkce_client(token)
     print("\n✓ PKCE client setup complete!")
+
+    # ── Agentic AI setup ──────────────────────────────────────────────────────
+    # The mcp scope + audience mapper + role assignments are required by the MCP
+    # service.  These steps are idempotent so they are safe to re-run.
+    token = get_admin_token()
+    ensure_mcp_user_role(token)
+    ensure_ai_agent_secret_client(token)
+    ensure_ai_agent_spiffe_client(token)
+    ensure_ai_agent_cert_client(token)
+    mcp_scope_id = ensure_mcp_client_scope(token)
+    for client_id_str in ("ai-agent-secret", "ai-agent-spiffe", "ai-agent-cert"):
+        ensure_mcp_scope_on_client(token, client_id_str, mcp_scope_id)
+        ensure_mcp_role_on_service_account(token, client_id_str)
+    print("\n✓ Agentic AI (UC1 + UC2 + UC3a) setup complete — all three agents can access MCP!")
 
 
 if __name__ == "__main__":

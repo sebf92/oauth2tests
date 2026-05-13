@@ -24,6 +24,10 @@
       {
         "name": "user-role",
         "description": "Regular user — access to user-level endpoints"
+      },
+      {
+        "name": "mcp-user",
+        "description": "Allowed to call the MCP service tools (Agentic AI demos)"
       }
     ],
     "client": {}
@@ -144,6 +148,35 @@
       ]
     },
     {
+      "clientId": "ai-agent-secret",
+      "name": "AI Agent — Client Secret",
+      "description": "Agentic AI demo — service principal authenticating via client_id + client_secret (Client Credentials grant)",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "ai-agent-secret-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt",
+        "roles"
+      ]
+    },
+    {
       "clientId": "service-client",
       "name": "Service Account Client",
       "description": "Demonstrates Client Credentials flow (machine-to-machine)",
@@ -228,6 +261,12 @@
       "enabled": true,
       "serviceAccountClientId": "spiffe-service",
       "realmRoles": ["user-role"]
+    },
+    {
+      "username": "service-account-ai-agent-secret",
+      "enabled": true,
+      "serviceAccountClientId": "ai-agent-secret",
+      "realmRoles": ["mcp-user"]
     }
   ]
 }

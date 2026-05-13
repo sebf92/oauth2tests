@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Agentic AI — OAuth2 + JWT Demo{% endblock %}
+
+{% block content %}
+
+{# ── Hero ─────────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-info">
+  <div class="d-flex align-items-center gap-3">
+    <i class="bi bi-cpu text-info" style="font-size:2rem"></i>
+    <div>
+      <h1 class="h4 fw-bold mb-1">Agentic AI &mdash; Authenticated MCP Access</h1>
+      <p class="text-muted mb-0">
+        Three patterns for authenticating an AI agent to a protected
+        <strong>MCP server</strong> (Model Context Protocol). Each agent obtains a
+        Keycloak access token using a different mechanism, then calls real MCP tools
+        over Streamable HTTP using the official MCP Python SDK.
+      </p>
+    </div>
+  </div>
+</div>
+
+{# ── Architecture summary ────────────────────────────────────────────────────── #}
+<div class="row g-4 mb-4">
+  <div class="col-lg-8">
+    <h5 class="section-title">How an agent run works</h5>
+    <ol class="small text-muted">
+      <li>
+        <strong>Authenticate to Keycloak.</strong> Each agent uses its own mechanism
+        (client&nbsp;secret today; SPIFFE attestation and X.509 certificate in upcoming
+        iterations) and requests <code>scope=mcp</code>. Keycloak issues a JWT with
+        <code>aud=mcp-service</code> and <code>scope=mcp</code>.
+      </li>
+      <li>
+        <strong>Connect to the MCP server.</strong> The agent uses the official
+        <code>mcp</code> Python SDK to open a Streamable HTTP session, passing the
+        access token in <code>Authorization: Bearer</code>. The MCP server validates
+        the signature, issuer, audience, expiry, and required scope, then accepts the
+        session.
+      </li>
+      <li>
+        <strong>Discover &amp; call tools.</strong> The agent calls the MCP
+        <code>tools/list</code> method, converts the tool schemas into Anthropic
+        tool-use format, and hands the task to Claude. Claude returns
+        <code>tool_use</code> blocks; the agent invokes them on the MCP session and
+        feeds the results back to Claude.
+      </li>
+      <li>
+        <strong>Return the answer.</strong> The agent records every step (token claims,
+        MCP discovery, each loop iteration with its tool calls) and returns a single
+        structured trace which this page renders.
+      </li>
+    </ol>
+  </div>
+  <div class="col-lg-4">
+    <h5 class="section-title">Endpoints</h5>
+    <div class="card bg-light border-0 shadow-sm">
+      <div class="card-body small">
+        <table class="table table-sm table-borderless mb-0">
+          <tr>
+            <td class="text-muted">MCP service</td>
+            <td><a href="http://localhost:8003/" target="_blank"><code>localhost:8003</code></a></td>
+          </tr>
+          <tr>
+            <td class="text-muted">MCP discovery</td>
+            <td><a href="http://localhost:8003/.well-known/oauth-protected-resource" target="_blank">
+              <code>/.well-known/oauth-protected-resource</code></a></td>
+          </tr>
+          <tr>
+            <td class="text-muted">MCP transport</td>
+            <td><code>POST {{ mcp_service_url }}/mcp</code></td>
+          </tr>
+          <tr>
+            <td class="text-muted">Authorization</td>
+            <td><code>Bearer &lt;JWT&gt;</code> &mdash; scope <code>mcp</code></td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Agent cards ──────────────────────────────────────────────────────────────── #}
+<h5 class="section-title">Run an agent</h5>
+<div class="row g-3 mb-4">
+
+  {% for slug, meta in agents.items() %}
+  <div class="col-md-6 col-lg-4">
+    <div class="card flow-card shadow-sm border-start border-4 border-{{ meta.color }} h-100">
+      <div class="card-body d-flex flex-column">
+        <div class="d-flex align-items-center mb-2">
+          <i class="bi {{ meta.icon }} text-{{ meta.color }} me-2" style="font-size:1.5rem"></i>
+          <h6 class="mb-0">{{ meta.title }}</h6>
+        </div>
+        <span class="badge bg-{{ meta.color }} mb-2 align-self-start">{{ meta.badge }}</span>
+        <p class="card-text text-muted small mb-3">{{ meta.description }}</p>
+        <div class="bg-light rounded p-2 small font-monospace mb-3 text-truncate">
+          {{ meta.rfc }}
+        </div>
+        <a href="{{ url_for('agentic_agent', slug=slug) }}" class="btn btn-{{ meta.color }} w-100 mt-auto">
+          <i class="bi bi-play-circle me-1"></i>Run Agent
+        </a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+
+</div>
+
+{% endblock %}

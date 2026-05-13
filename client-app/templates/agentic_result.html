@@ -1,0 +1,335 @@
+{% extends "base.html" %}
+{% block title %}{{ meta.title }} Agent — Result{% endblock %}
+
+{% block content %}
+
+{# ── Breadcrumb ───────────────────────────────────────────────────────────────── #}
+<nav class="mb-3" aria-label="breadcrumb">
+  <ol class="breadcrumb mb-0">
+    <li class="breadcrumb-item"><a href="{{ url_for('index') }}">Home</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('agentic_index') }}">Agentic AI</a></li>
+    <li class="breadcrumb-item active">{{ meta.title }}</li>
+  </ol>
+</nav>
+
+{# ── Header card ────────────────────────────────────────────────────────────── #}
+<div class="p-4 mb-4 bg-white rounded-3 shadow-sm border-start border-5 border-{{ meta.color }}">
+  <div class="d-flex align-items-center gap-3">
+    <i class="bi {{ meta.icon }} text-{{ meta.color }}" style="font-size:2rem"></i>
+    <div class="flex-grow-1">
+      <h1 class="h4 fw-bold mb-1">{{ meta.title }} Agent</h1>
+      <p class="text-muted small mb-0">{{ meta.description }}</p>
+    </div>
+    <span class="badge bg-{{ meta.color }} ms-auto align-self-start">{{ meta.badge }}</span>
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">
+  <strong><i class="bi bi-exclamation-triangle-fill me-2"></i>Agent error:</strong> {{ error }}
+</div>
+{% endif %}
+
+{# ── Agent info ───────────────────────────────────────────────────────────────── #}
+{% if info %}
+<h5 class="section-title">Configuration</h5>
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <table class="table table-sm table-borderless mb-0 small">
+      <tr><td class="text-muted" style="width:180px">Auth method</td>
+          <td><code>{{ info.auth_method }}</code></td></tr>
+      <tr><td class="text-muted">Client ID</td>
+          <td><code>{{ info.client_id }}</code></td></tr>
+      <tr><td class="text-muted">MCP server</td>
+          <td><code>{{ info.mcp_url }}</code></td></tr>
+      <tr><td class="text-muted">Model</td>
+          <td><code>{{ info.model }}</code>
+            {% if info.mode == 'mock' %}
+              <span class="badge bg-secondary ms-2">mock mode — set ANTHROPIC_API_KEY for live Claude</span>
+            {% else %}
+              <span class="badge bg-success ms-2">live</span>
+            {% endif %}
+          </td></tr>
+      <tr><td class="text-muted">Task</td>
+          <td class="text-muted">{{ info.task }}</td></tr>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if run %}
+
+{# ── Step 0 (cert agent only): X.509 certificate metadata ──────────────────── #}
+{% if run.cert %}
+<h5 class="section-title">
+  <span class="badge bg-dark me-2">0</span>X.509 Certificate
+</h5>
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <p class="mb-3 small text-muted">
+      The certificate below is the agent's long-lived credential. Its private key
+      signs the RFC 7523 <code>client_assertion</code>; the matching public key is
+      published in the agent's <code>/jwks</code> with <code>x5c</code> + <code>x5t#S256</code>
+      so the cert chain is verifiable from the JWKS alone.
+    </p>
+    {% if run.cert.agent %}
+    <h6 class="small text-muted text-uppercase">Agent leaf certificate</h6>
+    <table class="table table-sm small mb-3">
+      <tr><td class="text-muted" style="width:180px">Subject</td>
+          <td><code>{{ run.cert.agent.subject }}</code></td></tr>
+      <tr><td class="text-muted">Issuer</td>
+          <td><code>{{ run.cert.agent.issuer }}</code></td></tr>
+      <tr><td class="text-muted">Serial</td>
+          <td><code>{{ run.cert.agent.serial }}</code></td></tr>
+      <tr><td class="text-muted">Not before</td>
+          <td><code>{{ run.cert.agent.not_before }}</code></td></tr>
+      <tr><td class="text-muted">Not after</td>
+          <td><code>{{ run.cert.agent.not_after }}</code></td></tr>
+      <tr><td class="text-muted">SHA-256 fingerprint</td>
+          <td><code style="word-break:break-all">{{ run.cert.agent.sha256_fp }}</code></td></tr>
+      <tr><td class="text-muted">Signature algorithm</td>
+          <td><code>{{ run.cert.agent.signature_algorithm }}</code></td></tr>
+    </table>
+    {% endif %}
+    {% if run.cert.ca %}
+    <h6 class="small text-muted text-uppercase">Issuing CA</h6>
+    <table class="table table-sm small mb-0">
+      <tr><td class="text-muted" style="width:180px">Subject</td>
+          <td><code>{{ run.cert.ca.subject }}</code></td></tr>
+      <tr><td class="text-muted">SHA-256 fingerprint</td>
+          <td><code style="word-break:break-all">{{ run.cert.ca.sha256_fp }}</code></td></tr>
+    </table>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Step 0 (SPIFFE only): SPIRE attestation → JWT-SVID ─────────────────────── #}
+{% if run.svid %}
+<h5 class="section-title">
+  <span class="badge bg-dark me-2">0</span>SPIRE Workload Attestation
+</h5>
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    {% if run.svid.success %}
+      <p class="mb-3">
+        <i class="bi bi-check-circle-fill text-success me-1"></i>
+        <strong>Container attested</strong> &mdash; SPIRE verified this workload's OS
+        identity via the unix attestor and issued a JWT-SVID.
+      </p>
+      <table class="table table-sm small mb-0">
+        <tr><td class="text-muted" style="width:160px">SPIFFE ID</td>
+            <td><code>{{ run.svid.spiffe_id }}</code></td></tr>
+        <tr><td class="text-muted">Workload API socket</td>
+            <td><code>{{ run.svid.socket }}</code></td></tr>
+        {% if run.svid.payload %}
+        <tr><td class="text-muted">iss</td><td><code>{{ run.svid.payload.iss }}</code></td></tr>
+        <tr><td class="text-muted">aud</td><td>
+          {% set aud = run.svid.payload.aud %}
+          {% if aud is iterable and aud is not string %}
+            {% for v in aud %}<code>{{ v }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+          {% else %}<code>{{ aud }}</code>{% endif %}
+        </td></tr>
+        <tr><td class="text-muted">exp</td><td><code>{{ run.svid.payload.exp }}</code></td></tr>
+        {% endif %}
+      </table>
+      <p class="small text-muted mt-3 mb-0">
+        <i class="bi bi-info-circle me-1"></i>The JWT-SVID is the runtime proof of identity.
+        It is <strong>not</strong> sent to Keycloak — a separate RFC 7523 <code>client_assertion</code>
+        signed by the agent's own EC key authenticates the next step.
+      </p>
+    {% else %}
+      <p class="mb-0 text-danger">
+        <i class="bi bi-x-circle-fill me-1"></i>
+        <strong>SPIRE attestation failed:</strong> {{ run.svid.error or '(no detail)' }}
+      </p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Step 1: OAuth2 token ────────────────────────────────────────────────────── #}
+<h5 class="section-title">
+  <span class="badge bg-primary me-2">1</span>OAuth2 Authentication
+</h5>
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    {% set a = run.auth %}
+    {% if a.success %}
+      <p class="mb-3">
+        <i class="bi bi-check-circle-fill text-success me-1"></i>
+        <strong>Token obtained</strong> &mdash; grant <code>{{ a.grant_type }}</code>,
+        scope <code>{{ a.scope }}</code>, expires in {{ a.expires_in }} s.
+        {% if a.auth_method and 'client_credentials' not in a.auth_method.lower() %}
+          <br><span class="small text-muted">Auth method: <code>{{ a.auth_method }}</code></span>
+        {% endif %}
+      </p>
+
+      {% if a.assertion_claims %}
+      <details class="small mb-3">
+        <summary class="text-muted">Show client_assertion claims (RFC 7523)</summary>
+        <pre class="small p-2 bg-light rounded border mt-2 mb-0">{{ a.assertion_claims | tojson(indent=2) }}</pre>
+      </details>
+      {% endif %}
+
+      {% if a.access_token %}
+      <details class="small mb-3">
+        <summary class="text-muted">Show raw access token (paste into jwt.io to verify the signature)</summary>
+        <div class="mt-2">
+          <textarea class="form-control font-monospace small" rows="4"
+                    readonly onclick="this.select()"
+                    style="font-size:.72rem;word-break:break-all">{{ a.access_token }}</textarea>
+          <div class="d-flex gap-2 mt-2">
+            <button class="btn btn-sm btn-outline-secondary"
+                    onclick="navigator.clipboard.writeText({{ a.access_token | tojson }});this.innerText='Copied!';setTimeout(()=>this.innerText='Copy JWT',1500)">
+              <i class="bi bi-clipboard me-1"></i>Copy JWT
+            </button>
+            <a href="https://jwt.io/#token={{ a.access_token | urlencode }}"
+               target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary">
+              <i class="bi bi-box-arrow-up-right me-1"></i>Open on jwt.io
+            </a>
+          </div>
+        </div>
+      </details>
+      {% endif %}
+      <h6 class="small text-muted text-uppercase">Decoded claims</h6>
+      <table class="table table-sm small mb-0">
+        <tr><td class="text-muted" style="width:160px">iss</td><td><code>{{ a.token_claims.iss }}</code></td></tr>
+        <tr><td class="text-muted">aud</td><td>
+          {% set aud = a.token_claims.aud %}
+          {% if aud is iterable and aud is not string %}
+            {% for v in aud %}<code>{{ v }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+          {% else %}
+            <code>{{ aud }}</code>
+          {% endif %}
+        </td></tr>
+        <tr><td class="text-muted">azp</td><td><code>{{ a.token_claims.azp }}</code></td></tr>
+        <tr><td class="text-muted">scope</td><td><code>{{ a.token_claims.scope }}</code></td></tr>
+        <tr><td class="text-muted">sub</td><td><code>{{ a.token_claims.sub }}</code></td></tr>
+        <tr><td class="text-muted">realm_access.roles</td><td>
+          {% for r in a.token_claims.get('realm_access', {}).get('roles', []) %}
+            <span class="badge bg-{{ 'info' if r == 'mcp-user' else 'secondary' }} me-1">{{ r }}</span>
+          {% else %}<span class="text-muted">(none)</span>{% endfor %}
+        </td></tr>
+        <tr><td class="text-muted">exp</td><td><code>{{ a.token_claims.exp }}</code></td></tr>
+      </table>
+    {% else %}
+      <p class="mb-0 text-danger">
+        <i class="bi bi-x-circle-fill me-1"></i>
+        <strong>Token request failed</strong> &mdash; HTTP {{ a.status_code }}: {{ a.error or '(no detail)' }}
+      </p>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Step 2: MCP discovery ───────────────────────────────────────────────────── #}
+<h5 class="section-title">
+  <span class="badge bg-info text-dark me-2">2</span>MCP Discovery
+</h5>
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    {% if run.mcp and not run.mcp.error %}
+      <p class="mb-3 small text-muted">
+        Streamable HTTP session opened to <code>{{ run.mcp.server_url }}</code>.
+        The MCP server validated the Bearer token and accepted <code>tools/list</code>.
+      </p>
+      {% if run.mcp.tools %}
+      <h6 class="small text-muted text-uppercase">Available tools</h6>
+      <div class="table-responsive">
+        <table class="table table-sm small mb-0">
+          <thead><tr><th>Name</th><th>Description</th><th>Input schema</th></tr></thead>
+          <tbody>
+          {% for t in run.mcp.tools %}
+            <tr>
+              <td><code>{{ t.name }}</code></td>
+              <td class="text-muted">{{ t.description }}</td>
+              <td><pre class="small mb-0 text-muted">{{ t.input_schema | tojson(indent=2) }}</pre></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    {% elif run.mcp %}
+      <p class="mb-0 text-danger">
+        <i class="bi bi-x-circle-fill me-1"></i>
+        <strong>MCP connection failed:</strong> {{ run.mcp.error }}
+      </p>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Step 3: Tool-use loop ───────────────────────────────────────────────────── #}
+<h5 class="section-title">
+  <span class="badge bg-warning text-dark me-2">3</span>Claude Tool-Use Loop
+</h5>
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <p class="small text-muted mb-3">
+      Each turn = one call to <code>messages.create</code>.
+      The agent runs the loop until Claude returns <code>stop_reason != "tool_use"</code>.
+    </p>
+    {% for turn in run.turns %}
+      <div class="border rounded p-3 mb-3 bg-light">
+        <div class="d-flex align-items-center mb-2">
+          <span class="badge bg-secondary me-2">Turn {{ turn.iteration }}</span>
+          <span class="text-muted small">stop_reason: <code>{{ turn.stop_reason }}</code></span>
+        </div>
+        {% if turn.text %}
+        <div class="mb-2">
+          <div class="text-muted small">assistant text</div>
+          <div class="p-2 bg-white rounded border small">{{ turn.text }}</div>
+        </div>
+        {% endif %}
+        {% for tc in turn.tool_calls %}
+          <div class="mb-2">
+            <div class="text-muted small">
+              MCP tool call: <code>{{ tc.name }}({{ tc.input | tojson }})</code>
+              {% if tc.ok %}
+                <span class="badge bg-success ms-1">ok</span>
+              {% else %}
+                <span class="badge bg-danger ms-1">error</span>
+              {% endif %}
+            </div>
+            <pre class="small p-2 bg-white rounded border mb-0" style="max-height:240px;overflow:auto">{{ tc.result | tojson(indent=2) }}</pre>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-muted small mb-0">No turns recorded.</p>
+    {% endfor %}
+  </div>
+</div>
+
+{# ── Step 4: Final answer ───────────────────────────────────────────────────── #}
+<h5 class="section-title">
+  <span class="badge bg-success me-2">4</span>Final Answer
+</h5>
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    {% if run.final_answer %}
+      <div class="p-3 bg-light rounded">
+        <i class="bi bi-chat-quote text-success me-2"></i>{{ run.final_answer }}
+      </div>
+    {% else %}
+      <p class="text-muted mb-0">No final answer produced.</p>
+    {% endif %}
+    <div class="small text-muted mt-3">
+      Duration: {{ run.duration_ms }} ms &middot; Mode: {{ run.mode }} &middot; Model:
+      <code>{{ run.model }}</code>
+    </div>
+  </div>
+</div>
+
+{% endif %}
+
+<div class="d-flex gap-2">
+  <a href="{{ url_for('agentic_agent', slug=slug) }}" class="btn btn-{{ meta.color }}">
+    <i class="bi bi-arrow-clockwise me-1"></i>Run Again
+  </a>
+  <a href="{{ url_for('agentic_index') }}" class="btn btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>Back to Agentic AI
+  </a>
+</div>
+
+{% endblock %}

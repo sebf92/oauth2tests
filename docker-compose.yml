@@ -115,6 +115,12 @@ services:
       PKCE_CLIENT_ID: pkce-client
       RESOURCE_SERVER_URL: http://resource-server:8001
       SPIFFE_SERVICE_URL: http://spiffe-service:8002
+      # MCP service + Agentic AI agents (UC1).  These URLs are used internally
+      # only — the agent runs are triggered server-side from Flask.
+      MCP_SERVICE_URL: http://mcp-service:8003
+      AGENT_SECRET_URL: http://agent-secret:9001
+      AGENT_SPIFFE_URL: http://agent-spiffe:9002
+      AGENT_CERT_URL: http://agent-cert:9003
       REDIRECT_URI: http://localhost:5000/auth/callback
       SECRET_KEY: change-this-secret-key-in-production-abc123
       FLASK_ENV: development
@@ -190,6 +196,144 @@ services:
     networks:
       - oauth2-net
 
+  # ── MCP Service — OAuth2-protected Model Context Protocol server ────────────
+  # Real MCP Streamable HTTP transport (via the official Python SDK).  Used by
+  # the Agentic AI demos.  Bearer-protected: agents must obtain a token from
+  # Keycloak with the `mcp` scope before they can call any tool.
+  mcp-service:
+    build:
+      context: ./mcp-service
+      dockerfile: Dockerfile
+    container_name: oauth2-mcp-service
+    environment:
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_REALM: demo
+      # Must match the iss claim Keycloak puts in JWTs (i.e. the public hostname).
+      KEYCLOAK_ISSUER: http://localhost:8080/realms/demo
+      # Audience the MCP server requires in tokens.  An audience mapper on the
+      # 'mcp' client scope adds this value when the scope is requested.
+      MCP_AUDIENCE: mcp-service
+      # Public URL — what the MCP service publishes in its discovery document.
+      MCP_SERVICE_URL: http://localhost:8003
+    ports:
+      - "8003:8003"
+    depends_on:
+      - keycloak
+    networks:
+      - oauth2-net
+
+  # ── AI Agent (UC1) — Client Credentials → MCP ────────────────────────────────
+  # Demonstrates the Agentic AI use case: a service principal with a static
+  # client_id + client_secret obtains a Keycloak token (scope=mcp) and uses it
+  # to call the protected MCP server via the official MCP Python SDK.
+  # Optional: set ANTHROPIC_API_KEY in .env to enable the real Claude tool loop;
+  # without it the agent runs a deterministic mock that exercises the same path.
+  agent-secret:
+    build:
+      context: ./ai-agents/agent-secret
+      dockerfile: Dockerfile
+    container_name: oauth2-agent-secret
+    environment:
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_REALM: demo
+      AGENT_CLIENT_ID: ai-agent-secret
+      AGENT_CLIENT_SECRET: ai-agent-secret-secret
+      MCP_SERVER_URL: http://mcp-service:8003/mcp
+      # Pass through from .env (if present).  Leave unset to run in mock mode.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+    ports:
+      - "9001:9001"
+    depends_on:
+      - keycloak
+      - mcp-service
+    networks:
+      - oauth2-net
+
+  # ── Cert Init — generates the demo CA + agent.crt + agent.key (UC3a) ────────
+  # Runs once and exits.  The output lands on the agent-cert-pki named volume,
+  # shared read-only with agent-cert.  Idempotent: if the volume already holds
+  # an agent certificate, the script skips regeneration so the Keycloak client's
+  # registered public key keeps matching the agent's private key across restarts.
+  cert-init:
+    build:
+      context: ./cert-init
+      dockerfile: Dockerfile
+    container_name: oauth2-cert-init
+    volumes:
+      - agent-cert-pki:/pki
+    restart: "no"
+    networks:
+      - oauth2-net
+
+  # ── AI Agent (UC3a) — X.509 cert → RFC 7523 client_assertion → MCP ──────────
+  # The cert + key come from the agent-cert-pki volume (populated by cert-init).
+  # Auth: same RFC 7523 mechanism as UC2, but the key is long-lived and persisted
+  # rather than ephemeral.  Keycloak fetches the public JWK (with x5c chain) from
+  # this service's /jwks endpoint to verify the client_assertion signature.
+  agent-cert:
+    build:
+      context: ./ai-agents/agent-cert
+      dockerfile: Dockerfile
+    container_name: oauth2-agent-cert
+    environment:
+      PKI_DIR: /pki
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_REALM: demo
+      AGENT_CLIENT_ID: ai-agent-cert
+      MCP_SERVER_URL: http://mcp-service:8003/mcp
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+    volumes:
+      - agent-cert-pki:/pki:ro
+    ports:
+      - "9003:9003"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      mcp-service:
+        condition: service_started
+    networks:
+      - oauth2-net
+
+  # ── AI Agent (UC2) — SPIFFE attestation → MCP ────────────────────────────────
+  # The agent runs as UID 1000 (distinct from spiffe-service's UID 0) so SPIRE's
+  # unix workload attestor can tell them apart and issue the correct SVID.
+  # Auth: RFC 7523 private_key_jwt — the agent's own EC key signs a
+  # client_assertion; Keycloak fetches the public key from agent-spiffe:9002/jwks.
+  agent-spiffe:
+    build:
+      context: ./ai-agents/agent-spiffe
+      dockerfile: Dockerfile
+    container_name: oauth2-agent-spiffe
+    # Same trick spiffe-service uses: share the SPIRE agent's PID namespace so
+    # the unix workload attestor (SO_PEERCRED → UID) can see this process.
+    pid: "service:spire-agent"
+    environment:
+      SPIFFE_ENDPOINT_SOCKET: "unix:///tmp/spire-agent/public/api.sock"
+      SPIFFE_TRUST_DOMAIN: demo.local
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      KEYCLOAK_REALM: demo
+      AGENT_CLIENT_ID: ai-agent-spiffe
+      MCP_SERVER_URL: http://mcp-service:8003/mcp
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+    volumes:
+      - spire-agent-socket:/tmp/spire-agent:ro
+    ports:
+      - "9002:9002"
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      mcp-service:
+        condition: service_started
+    networks:
+      - oauth2-net
+
   # ── SPIFFE Service — workload identity demo ──────────────────────────────────
   spiffe-service:
     build:
@@ -228,3 +372,5 @@ volumes:
   spire-server-socket:
   spire-agent-socket:
   spire-tokens:
+  # PKI material for UC3a — populated once by cert-init, read by agent-cert.
+  agent-cert-pki:

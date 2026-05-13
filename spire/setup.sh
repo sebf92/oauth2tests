@@ -53,6 +53,20 @@ echo "=== Creating workload entry for spiffe-service ==="
   -spiffeID   "spiffe://${TRUST_DOMAIN}/spiffe-service" \
   -selector   unix:uid:0 \
   -ttl        3600 2>&1 | grep -v "^$" || true
+echo "  ✓ spiffe-service entry created"
 
-echo "  ✓ Workload entry created"
+# selector unix:uid:1000 → ai-agent-spiffe.  We deliberately use a DIFFERENT UID
+# so this entry does not collide with spiffe-service (uid:0). The agent-spiffe
+# Dockerfile creates and runs as user 1000.  Without distinct selectors, SPIRE
+# would issue BOTH SPIFFE IDs to BOTH containers — masking which workload
+# actually authenticated.
+echo "=== Creating workload entry for ai-agent-spiffe ==="
+"$SPIRE_SERVER" entry create \
+  -socketPath "$SOCKET" \
+  -parentID   "$AGENT_SPIFFE_ID" \
+  -spiffeID   "spiffe://${TRUST_DOMAIN}/ai-agent-spiffe" \
+  -selector   unix:uid:1000 \
+  -ttl        3600 2>&1 | grep -v "^$" || true
+echo "  ✓ ai-agent-spiffe entry created"
+
 echo "=== SPIRE init complete ==="

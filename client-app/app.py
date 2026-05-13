@@ -107,6 +107,53 @@ RESOURCE_URL  = os.getenv("RESOURCE_SERVER_URL", "http://resource-server:8001")
 SPIFFE_URL    = os.getenv("SPIFFE_SERVICE_URL",  "http://spiffe-service:8002")
 REDIRECT_URI  = os.getenv("REDIRECT_URI", "http://localhost:5000/auth/callback")
 
+# ── Agentic AI configuration ──────────────────────────────────────────────────
+# Server-side URLs for the MCP service and each agent container.  Used by the
+# /agentic/* routes which trigger an agent run and render its structured trace.
+MCP_SERVICE_URL  = os.getenv("MCP_SERVICE_URL",  "http://mcp-service:8003")
+AGENT_SECRET_URL = os.getenv("AGENT_SECRET_URL", "http://agent-secret:9001")
+AGENT_SPIFFE_URL = os.getenv("AGENT_SPIFFE_URL", "http://agent-spiffe:9002")
+AGENT_CERT_URL   = os.getenv("AGENT_CERT_URL",   "http://agent-cert:9003")
+
+# Agent registry — slug → (display name, agent base URL, description, icon, color, badge).
+# Adding a new agent (e.g. UC3 cert) is a single entry here plus a container in
+# docker-compose.yml that exposes the same /run + /info contract.
+AGENT_REGISTRY = {
+    "client-secret": {
+        "title":       "Client Secret",
+        "url":         AGENT_SECRET_URL,
+        "description": "Service principal authenticating with a static client_id + client_secret. "
+                       "Obtains a Keycloak token via the Client Credentials grant, then calls the "
+                       "protected MCP server.",
+        "icon":        "bi-key-fill",
+        "color":       "primary",
+        "badge":       "UC1 · Client Credentials",
+        "rfc":         "RFC 6749 §4.4",
+    },
+    "spiffe": {
+        "title":       "SPIFFE Workload Identity",
+        "url":         AGENT_SPIFFE_URL,
+        "description": "Agent attests its identity to SPIRE (unix:uid:1000 selector) and signs an "
+                       "RFC 7523 client_assertion with an ephemeral EC key. Keycloak validates "
+                       "the assertion against the agent's JWKS endpoint — zero static secrets.",
+        "icon":        "bi-fingerprint",
+        "color":       "success",
+        "badge":       "UC2 · Workload Identity",
+        "rfc":         "RFC 7523 + SPIFFE",
+    },
+    "cert": {
+        "title":       "X.509 Certificate",
+        "url":         AGENT_CERT_URL,
+        "description": "Service principal with a CA-issued certificate and long-lived private key. "
+                       "The key signs an RFC 7523 client_assertion; the JWKS published by the agent "
+                       "embeds the certificate (x5c + x5t#S256) so the cert chain is verifiable.",
+        "icon":        "bi-patch-check-fill",
+        "color":       "warning",
+        "badge":       "UC3a · Certificate",
+        "rfc":         "RFC 7523 + X.509",
+    },
+}
+
 # Keycloak endpoints
 KC_AUTH_URL       = f"{KC_EXT}/realms/{REALM}/protocol/openid-connect/auth"
 KC_TOKEN_URL      = f"{KC_INT}/realms/{REALM}/protocol/openid-connect/token"
@@ -1267,6 +1314,81 @@ def token_inspect():
     )
 
 
+# ── Agentic AI section — MCP-protected agent demos ────────────────────────────
+#
+# Each agent container exposes a uniform HTTP contract:
+#   GET  /info        Agent metadata (auth method, MCP URL, model, …)
+#   POST /run         Synchronously execute one agent task; returns a structured
+#                     trace (auth step, MCP discovery, Claude tool-use loop,
+#                     final answer).  See ai-agents/agent-secret/agent.py.
+#
+# The Flask app does not perform any OAuth2 or MCP work itself for these demos —
+# it just proxies the agent's response and renders it.  This keeps the
+# educational story focused on the agent container, which is what would run in
+# production.
+
+
+@app.route("/agentic")
+def agentic_index():
+    """Landing page for the Agentic AI demos — lists every registered agent."""
+    return render_template(
+        "agentic_index.html",
+        agents=AGENT_REGISTRY,
+        mcp_service_url=MCP_SERVICE_URL,
+    )
+
+
+@app.route("/agentic/<slug>")
+def agentic_agent(slug: str):
+    """
+    Trigger a single run of the named agent and render the result.
+
+    Flow:
+      1. GET  <agent>/info   to display configuration without running anything
+         heavy if the agent is unhealthy.
+      2. POST <agent>/run    to execute the full pipeline (token → MCP → Claude
+         → final answer).  Long-ish — the Anthropic loop can take a few seconds.
+    """
+    meta = AGENT_REGISTRY.get(slug)
+    if not meta:
+        flash(f"Unknown agent: '{slug}'.", "warning")
+        return redirect(url_for("agentic_index"))
+
+    info_data: dict = {}
+    run_data:  dict | None = None
+    error:     str  | None = None
+
+    try:
+        info_resp = requests.get(f"{meta['url']}/info", timeout=10)
+        info_data = info_resp.json() if info_resp.ok else {}
+    except Exception as exc:
+        error = f"Cannot reach agent at {meta['url']}: {exc}"
+
+    if error is None:
+        try:
+            # Agent runs can take several seconds when the Anthropic SDK is in use,
+            # so we use a generous timeout. The agent itself caps the tool-use loop.
+            run_resp = requests.post(f"{meta['url']}/run", timeout=120)
+            if run_resp.ok:
+                run_data = run_resp.json()
+            else:
+                error = f"Agent returned HTTP {run_resp.status_code}: {run_resp.text[:300]}"
+        except requests.ConnectionError as exc:
+            error = f"Cannot connect to the agent container: {exc}"
+        except Exception as exc:
+            error = f"Agent run failed: {exc}"
+
+    return render_template(
+        "agentic_result.html",
+        slug=slug,
+        meta=meta,
+        info=info_data,
+        run=run_data,
+        error=error,
+        mcp_service_url=MCP_SERVICE_URL,
+    )
+
+
 # ── Docs section — rendered markdown documentation ────────────────────────────
 
 DOCS_DIR = os.getenv(
@@ -1320,6 +1442,15 @@ DOCS_MANIFEST = [
         "color":       "danger",
         "badge":       "Identity Brokering",
         "description": "How Keycloak brokers authentication to PingFederate / PingOne — sequence diagrams and 23-step flow walkthrough",
+    },
+    {
+        "slug":        "agentic-ai",
+        "file":        "agentic-ai.md",
+        "title":       "Agentic AI + MCP",
+        "icon":        "bi-cpu",
+        "color":       "info",
+        "badge":       "Agentic AI",
+        "description": "Three patterns for authenticating an AI agent to a protected MCP server — Client Secret, SPIFFE workload identity, and X.509 certificate. Sequence diagrams + implementation notes.",
     },
 ]
 
