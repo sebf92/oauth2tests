@@ -1,23 +1,24 @@
 # Agentic AI — Authenticated MCP Access
 
-This section adds four demos to the project, each showing a different way an
+This section adds five demos to the project, each showing a different way an
 AI agent can authenticate (or be delegated to) when calling a protected
 **Model Context Protocol (MCP)** server. The agents are containerised Python services that drive the official
 **Anthropic SDK** tool-use loop; the MCP server speaks the real
 **MCP Streamable HTTP** transport (official `mcp` Python SDK) over OAuth 2.1
 Bearer tokens.
 
-The four patterns differ in *how the agent obtains its access token* and
+The five patterns differ in *how the agent obtains its access token* and
 *whose identity is in the token*:
 
 | # | Use case | Auth mechanism | Identity in token | Demo container |
 |---|----------|----------------|---------------|----------------|
 | UC1 | **Client Secret** | OAuth 2.0 Client Credentials (RFC 6749 §4.4) | `sub` = service account | `agent-secret` (:9001) |
-| UC2 | **SPIFFE Workload Identity** | SPIRE attestation → RFC 7523 `private_key_jwt` | `sub` = service account | `agent-spiffe` (:9002) |
+| UC2 | **SPIFFE Workload Identity** | SPIRE attestation → RFC 7523 `private_key_jwt` (in-memory key, not the SVID) | `sub` = service account | `agent-spiffe` (:9002) |
+| UC2-Hardened | **SPIFFE + mTLS** | SPIRE → X.509-SVID presented in TLS handshake (RFC 8705) | `sub` = service account; token cert-bound via `cnf.x5t#S256` | `agent-spiffe-mtls` (:9005) + `keycloak-mtls-proxy` (:8443) |
 | UC3a | **X.509 Certificate** | CA-issued cert → RFC 7523 `private_key_jwt` | `sub` = service account | `agent-cert` (:9003) |
 | UC4 | **User-Delegated (OBO + Rescope)** | RFC 8693 Token Exchange | `sub` = **the human user**; `act` = agent | `agent-delegated` (:9004) |
 
-The MCP server (`mcp-service` on port 8003) is the same for all four. The
+The MCP server (`mcp-service` on port 8003) is the same for all five. The
 agents all run the same task against the same tools — only the
 credential machinery and (for UC4) the identity model change.
 
@@ -38,11 +39,16 @@ graph TB
     subgraph Agents["AI Agent containers"]
         A1["agent-secret<br/>:9001<br/>UC1"]
         A2["agent-spiffe<br/>:9002<br/>UC2"]
+        A2H["agent-spiffe-mtls<br/>:9005<br/>UC2-Hardened"]
         A3["agent-cert<br/>:9003<br/>UC3a"]
     end
 
+    subgraph Proxy["mTLS sidecar"]
+        MP["keycloak-mtls-proxy<br/>:8443 (nginx)"]
+    end
+
     subgraph Keycloak["Keycloak :8080"]
-        KC["realm: demo<br/>clients: ai-agent-{secret,spiffe,cert}<br/>scope: mcp · role: mcp-user"]
+        KC["realm: demo<br/>clients: ai-agent-{secret,spiffe,spiffe-mtls,cert}<br/>scope: mcp · role: mcp-user"]
     end
 
     subgraph SPIRE["SPIRE"]
@@ -66,14 +72,19 @@ graph TB
     UI --> Routes
     Routes -- "POST /run" --> A1
     Routes -- "POST /run" --> A2
+    Routes -- "POST /run" --> A2H
     Routes -- "POST /run" --> A3
 
     A1 -- "client_credentials" --> KC
     A2 -- "private_key_jwt" --> KC
+    A2H -- "mTLS (X.509-SVID)" --> MP
+    MP -- "HTTP + ssl-client-cert" --> KC
     A3 -- "private_key_jwt" --> KC
 
     SS <--> SA
-    SA -- "Workload API" --> A2
+    SA -- "Workload API (JWT-SVID)" --> A2
+    SA -- "Workload API (X.509-SVID + bundle)" --> A2H
+    SA -- "Workload API (SVID + bundle)" --> MP
 
     CI --> Vol
     Vol --> A3
@@ -83,10 +94,12 @@ graph TB
 
     A1 -- "Bearer + MCP" --> Trans
     A2 -- "Bearer + MCP" --> Trans
+    A2H -- "Bearer (cnf.x5t#S256) + MCP" --> Trans
     A3 -- "Bearer + MCP" --> Trans
 
     A1 -- "tool calls" --> Claude
     A2 -- "tool calls" --> Claude
+    A2H -- "tool calls" --> Claude
     A3 -- "tool calls" --> Claude
 
     Trans --> Tools
@@ -152,9 +165,11 @@ remains tightly coupled to the existing OAuth2 demos.
 
 ## The agent tool-use loop
 
-All four agents run the same loop after the authentication step.  Only the
+All five agents run the same loop after the authentication step.  Only the
 "Auth — varies by use case" lane in the diagram differs: UC1 does Client
-Credentials, UC2 attests via SPIRE then exchanges a `client_assertion`, UC3a
+Credentials, UC2 attests via SPIRE then exchanges a `client_assertion`,
+UC2-Hardened opens an mTLS connection to the `keycloak-mtls-proxy` sidecar
+using the SPIRE-issued X.509-SVID and gets back a cert-bound token, UC3a
 loads a cert from a volume and exchanges a `client_assertion`, UC4 performs
 an RFC 8693 token exchange using the user's token as the subject.
 
@@ -305,6 +320,170 @@ attested workload could have got far enough to call Keycloak).
 open http://localhost:5000/agentic/spiffe
 curl -s -X POST http://localhost:9002/run | jq
 ```
+
+### Why UC2 alone is not enough — and what UC2-Hardened fixes
+
+UC2 above is **pedagogically correct** for showing the SPIFFE attestation
+pattern, but if you look at it as a security engineer you find a gap:
+
+- SPIRE issues an X.509-SVID and a JWT-SVID, but **neither is sent to
+  Keycloak**. The agent signs the `client_assertion` with an unrelated EC
+  key generated in memory at startup.
+- Keycloak validates that assertion by fetching `/jwks` on the agent
+  container over plain HTTP — any attacker who can host a `/jwks` endpoint
+  at the right hostname can impersonate the agent.
+- The trust chain SPIRE → workload → Keycloak is **conceptual, not
+  cryptographic**.
+
+UC2-Hardened (next section) closes this gap by using the SVID itself as the
+TLS client certificate (RFC 8705), so the SPIRE CA validates the agent
+identity end-to-end.
+
+---
+
+## UC2-Hardened — SPIFFE + mTLS (RFC 8705)
+
+### What changes vs. UC2
+
+| Aspect                  | UC2 (live, conceptual)              | UC2-Hardened (this UC)                |
+|-------------------------|--------------------------------------|----------------------------------------|
+| What proves identity?   | An EC key generated in container memory | The X.509-SVID issued by SPIRE         |
+| What does Keycloak verify? | A JWKS the agent self-publishes on `/jwks` | A client certificate chain validated against the SPIRE CA bundle |
+| Key lifetime            | Until container restart              | ~1 hour (auto-renewed by SPIRE)        |
+| Token replayable if stolen? | Yes — plain Bearer                | **No** — `cnf.x5t#S256` binds the token to the cert |
+| Standard                | RFC 7523 (private_key_jwt)           | **RFC 8705** (mutual-TLS + cert-bound) |
+| Keycloak authenticator  | `client-jwt` (`jwks_url`)            | `client-x509` (cert from reverse proxy header) |
+
+The deliverable is the same: an access token (`scope=mcp`) that the agent
+uses to call the MCP service via the official Python SDK. What differs is
+the credential and how Keycloak validates it.
+
+### Architecture
+
+UC2-Hardened adds two containers to the stack:
+
+- **`keycloak-mtls-proxy`** — an nginx sidecar that terminates mTLS on
+  `:8443`. It is itself a SPIRE workload
+  (`spiffe://demo.local/keycloak-mtls-proxy`, selector `unix:uid:1002`) so
+  it fetches its own server cert and the trust-domain bundle from SPIRE at
+  startup. Forwards verified requests to Keycloak with the client cert in
+  the `ssl-client-cert` header.
+- **`agent-spiffe-mtls`** — the agent itself, a SPIRE workload
+  (`spiffe://demo.local/ai-agent-spiffe-mtls`, selector `unix:uid:1001`)
+  that fetches its X.509-SVID and presents it during the TLS handshake to
+  the proxy.
+
+Keycloak is reconfigured so it can read certs from a proxy:
+- `KC_PROXY_HEADERS=xforwarded` — trust `X-Forwarded-*` from the proxy.
+- `KC_SPI_X509CERT_LOOKUP_PROVIDER=nginx` — read the verified client cert
+  from the `ssl-client-cert` HTTP header.
+
+### Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as agent-spiffe-mtls<br/>UID 1001
+    participant S as SPIRE Workload API
+    participant P as keycloak-mtls-proxy<br/>UID 1002 (nginx)
+    participant KC as Keycloak<br/>x509cert-lookup=nginx
+    participant MCP as MCP server
+
+    Note over P: Startup: spire-agent api fetch x509<br/>→ server.crt + spire-bundle.crt
+
+    A->>S: fetch_x509_svids() (over unix socket)
+    S-->>A: X509-SVID (cert chain + private key)
+    Note over A: Write SVID to temp files for httpx cert=
+
+    A->>P: TLS handshake — presents X.509-SVID
+    P->>P: ssl_verify_client on<br/>chain validated vs<br/>SPIRE trust bundle
+    Note over A,P: mTLS succeeds — both endpoints proven
+
+    A->>P: POST /realms/demo/protocol/openid-connect/token<br/>grant_type=client_credentials&scope=mcp
+    P->>KC: HTTP POST + ssl-client-cert: <URL-encoded PEM>
+    KC->>KC: client-x509 authenticator<br/>match cert subject DN<br/>vs x509.subjectdn regex
+    KC-->>P: 200 OK — access_token with cnf.x5t#S256
+    P-->>A: forwarded
+
+    A->>MCP: Bearer <token> + MCP session
+    MCP-->>A: tools/list + tool results
+    A-->>A: Claude tool-use loop → final answer
+```
+
+### Prerequisites
+
+Configured automatically by `spire/setup.sh` and `keycloak-init/setup.py`:
+
+- **SPIRE workload entries** — distinct selectors for each new workload:
+    - `unix:uid:1001` → `spiffe://demo.local/ai-agent-spiffe-mtls`
+    - `unix:uid:1002` → `spiffe://demo.local/keycloak-mtls-proxy`
+- **Keycloak client `ai-agent-spiffe-mtls`** with:
+    - `clientAuthenticatorType: client-x509`
+    - `x509.subjectdn: (.*,)?CN=ai-agent-spiffe-mtls(,.*)?` (regex match against
+      Subject DN; the SPIFFE workload's first DNS SAN becomes the cert CN, so
+      this match is per-workload — see caveat below)
+    - `tls.client.certificate.bound.access.tokens: true` — issues
+      cert-bound tokens with the `cnf.x5t#S256` claim
+- **Keycloak SPI flags** (in `command:` of the keycloak service):
+    - `--spi-x509cert-lookup-provider=nginx`
+    - `--spi-x509cert-lookup-nginx-ssl-client-cert=ssl-client-cert`
+- **MCP scope** assignment and **`mcp-user`** role on the service account
+  (same idempotent helpers used by every other agent).
+
+### What makes this UC2-Hardened
+
+- **SPIRE end-to-end.** The same SVID that proves the workload identity is
+  the credential Keycloak validates — no parallel key, no `/jwks`
+  endpoint, no static secret.
+- **Cert-bound access tokens.** RFC 8705 §3 — `cnf.x5t#S256` binds the
+  token to the TLS cert that opened the handshake. A stolen token cannot
+  be replayed without the matching private key. This is the M2M analogue
+  of DPoP.
+- **Auto-rotation.** SPIRE renews the SVID every ~hour without restarting
+  any container. The next mTLS handshake uses the fresh cert
+  automatically — no manual key management.
+
+### Caveat — Subject-CN as the identity marker
+
+Keycloak's `client-x509` authenticator matches on the **Subject DN** of the
+client certificate. The SPIRE-issued X.509-SVID puts the canonical SPIFFE
+ID in the **URI SAN** (`spiffe://demo.local/ai-agent-spiffe-mtls`), which
+Keycloak does **not** consult.
+
+To still get per-workload matching, the SPIRE workload entry in
+`spire/setup.sh` is created with `-dns ai-agent-spiffe-mtls`. SPIRE adds
+that DNS as a SAN and (its standard behaviour) promotes the first DNS SAN
+to the cert's Subject CN. The resulting Subject DN looks like
+`CN=ai-agent-spiffe-mtls,O=SPIRE,C=US` and the Keycloak regex matches that
+CN.
+
+Implications:
+
+- The match is per-workload (only certs SPIRE issued with this DNS will
+  authenticate as `ai-agent-spiffe-mtls`).
+- The CN value is configured by the operator at SPIRE entry creation —
+  not derived cryptographically from the SPIFFE URI. A different
+  workload with the same `-dns` would also pass. In a single-operator
+  trust domain this is fine; multi-tenant environments should add a
+  Lua-based SAN-URI check in the nginx proxy or a Keycloak SPI.
+
+The chain-validation step — the heart of the SPIRE → Keycloak trust link
+— is fully enforced regardless.
+
+### Run
+
+```bash
+open http://localhost:5000/agentic/spiffe-mtls
+curl -s -X POST http://localhost:9005/run | jq
+
+# Inspect the cert-bound binding on the issued token:
+curl -s -X POST http://localhost:9005/run \
+  | jq '.auth | {success, cert_bound, cnf_x5t_s256, status_code}'
+```
+
+The trace returned by `/run` includes the SVID metadata, the
+`cnf.x5t#S256` claim of the issued token, and the full MCP tool-use loop
+— same shape as the other agents.
 
 ---
 
@@ -524,9 +703,9 @@ curl -s -X POST http://localhost:9004/run \
      -d "{\"user_access_token\": \"$T0\"}" | jq
 ```
 
-### UC4 versus UC1/UC2/UC3a
+### UC4 versus UC1/UC2/UC2-Hardened/UC3a
 
-| Question | UC1/UC2/UC3a (service principal) | UC4 (user-delegated) |
+| Question | UC1/UC2/UC2-Hardened/UC3a (service principal) | UC4 (user-delegated) |
 |----------|----------------------------------|---------------------|
 | Who needs to be logged in? | Nobody | The human user |
 | What is `sub` in the MCP-bound token? | The agent's service account | The user |

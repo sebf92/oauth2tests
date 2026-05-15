@@ -111,10 +111,11 @@ REDIRECT_URI  = os.getenv("REDIRECT_URI", "http://localhost:5000/auth/callback")
 # Server-side URLs for the MCP service and each agent container.  Used by the
 # /agentic/* routes which trigger an agent run and render its structured trace.
 MCP_SERVICE_URL     = os.getenv("MCP_SERVICE_URL",     "http://mcp-service:8003")
-AGENT_SECRET_URL    = os.getenv("AGENT_SECRET_URL",    "http://agent-secret:9001")
-AGENT_SPIFFE_URL    = os.getenv("AGENT_SPIFFE_URL",    "http://agent-spiffe:9002")
-AGENT_CERT_URL      = os.getenv("AGENT_CERT_URL",      "http://agent-cert:9003")
-AGENT_DELEGATED_URL = os.getenv("AGENT_DELEGATED_URL", "http://agent-delegated:9004")
+AGENT_SECRET_URL      = os.getenv("AGENT_SECRET_URL",      "http://agent-secret:9001")
+AGENT_SPIFFE_URL      = os.getenv("AGENT_SPIFFE_URL",      "http://agent-spiffe:9002")
+AGENT_CERT_URL        = os.getenv("AGENT_CERT_URL",        "http://agent-cert:9003")
+AGENT_DELEGATED_URL   = os.getenv("AGENT_DELEGATED_URL",   "http://agent-delegated:9004")
+AGENT_SPIFFE_MTLS_URL = os.getenv("AGENT_SPIFFE_MTLS_URL", "http://agent-spiffe-mtls:9005")
 
 # Agent registry — slug → (display name, agent base URL, description, icon, color, badge).
 # Adding a new agent (e.g. UC3 cert) is a single entry here plus a container in
@@ -141,6 +142,18 @@ AGENT_REGISTRY = {
         "color":       "success",
         "badge":       "UC2 · Workload Identity",
         "rfc":         "RFC 7523 + SPIFFE",
+    },
+    "spiffe-mtls": {
+        "title":       "SPIFFE + mTLS (Hardened)",
+        "url":         AGENT_SPIFFE_MTLS_URL,
+        "description": "Production-grade SPIFFE: the agent presents its SPIRE-issued X.509-SVID "
+                       "during the TLS handshake to a sidecar proxy.  The proxy validates the cert "
+                       "chain against the SPIRE trust-domain bundle before forwarding to Keycloak. "
+                       "Issued access tokens are cert-bound (cnf.x5t#S256, RFC 8705) — replay-proof.",
+        "icon":        "bi-shield-lock-fill",
+        "color":       "danger",
+        "badge":       "UC2-Hardened · SPIFFE + mTLS",
+        "rfc":         "RFC 8705 + SPIFFE",
     },
     "cert": {
         "title":       "X.509 Certificate",

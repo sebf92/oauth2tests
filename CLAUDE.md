@@ -19,7 +19,7 @@ For deeper detail:
 
 An end-to-end **educational demonstration** of OAuth2 / OpenID Connect /
 SPIFFE / MCP-authenticated AI agents, backed by Keycloak 26.6.1 and a
-multi-container Docker stack. Eleven OAuth2 / OIDC flows and four agentic
+multi-container Docker stack. Eleven OAuth2 / OIDC flows and five agentic
 AI patterns are demonstrated **live and clickable** from a Flask web UI on
 `http://localhost:5000`.
 
@@ -54,9 +54,13 @@ mcp-service/         Real MCP HTTP server on :8003 — protected by Bearer JWT
 ai-agents/
   agent-secret/      UC1 :9001 — Client Credentials → MCP
   agent-spiffe/      UC2 :9002 — SPIFFE attestation → RFC 7523 → MCP
+  agent-spiffe-mtls/ UC2-Hardened :9005 — SPIFFE → mTLS (RFC 8705) → MCP
   agent-cert/        UC3a :9003 — X.509 cert → RFC 7523 → MCP
   agent-delegated/   UC4 :9004 — RFC 8693 OBO + rescope → MCP (requires logged-in user)
 cert-init/           One-shot container that generates CA + agent.crt for UC3a
+keycloak-mtls-proxy/ nginx sidecar on :8443 for UC2-Hardened — terminates mTLS using a
+                     SPIRE-issued server cert, validates client certs against the SPIRE
+                     trust-domain bundle, forwards to Keycloak with the cert in a header
 docs/                Markdown docs (rendered in the Flask UI via DOCS_MANIFEST in
                      client-app/app.py) + AI-agent reference docs (ALL-CAPS prefix)
 docker-compose.yml   Single source of truth for all services + volumes + network
@@ -81,6 +85,7 @@ docker logs -f oauth2-<service>                  # mcp-service, agent-secret, �
 # Smoke-test the four Agentic AI agents (returns structured JSON traces):
 curl -s -X POST http://localhost:9001/run        # UC1
 curl -s -X POST http://localhost:9002/run        # UC2
+curl -s -X POST http://localhost:9005/run        # UC2-Hardened
 curl -s -X POST http://localhost:9003/run        # UC3a
 # UC4 requires a logged-in user — fetch T0 first via /token/inspect:
 curl -s -X POST http://localhost:9004/run \
@@ -233,12 +238,13 @@ of the agent files — copy when implementing a new MCP client.
 
 ### SPIRE selectors must be distinct between workloads
 
-`spiffe-service` (UID 0) and `ai-agent-spiffe` (UID 1000) both attach to the
-same SPIRE agent. Same selector → SPIRE issues BOTH SPIFFE IDs to BOTH
-containers and audit trails become meaningless. When adding a new SPIRE
-workload, choose a distinct UID + run the container as that UID + register
-with `unix:uid:<N>`. PID-namespace sharing (`pid: "service:spire-agent"`)
-is also required.
+Four SPIRE workloads share the same agent — UID 0 (`spiffe-service`),
+UID 1000 (`ai-agent-spiffe`), UID 1001 (`ai-agent-spiffe-mtls`), and
+UID 1002 (`keycloak-mtls-proxy`). Same selector → SPIRE issues all SPIFFE
+IDs to all matching containers and audit trails become meaningless. When
+adding a new SPIRE workload, choose a distinct UID + run the container as
+that UID + register with `unix:uid:<N>`. PID-namespace sharing
+(`pid: "service:spire-agent"`) is also required.
 
 ### `x5c` uses base64 (not base64url)
 
@@ -303,10 +309,10 @@ and any other `docker exec` with absolute Unix paths.
 ## Working on the codebase — defaults
 
 - **Edit, don't rewrite.** Use `Edit` on existing files. Match surrounding
-  patterns. The four agent files (`agent-secret`, `agent-spiffe`,
-  `agent-cert`, `agent-delegated`) have intentional duplication so each
-  is self-contained for learning — don't refactor them into a shared
-  module without explicit user request.
+  patterns. The five agent files (`agent-secret`, `agent-spiffe`,
+  `agent-spiffe-mtls`, `agent-cert`, `agent-delegated`) have intentional
+  duplication so each is self-contained for learning — don't refactor them
+  into a shared module without explicit user request.
 - **Idempotent Keycloak changes.** Any realm modification needs both a
   `realm-export.json` update AND a `keycloak-init` `ensure_*` function. See
   convention §2 above.
@@ -337,8 +343,13 @@ and any other `docker exec` with absolute Unix paths.
 ## Anti-patterns — do not do
 
 - **Do not** add HTTPS to Keycloak directly. The dual-URL pattern relies on
-  HTTP-only port 8080. If mTLS is needed, use a sidecar (see
-  `docs/ROADMAP-uc3b-mtls.md`).
+  HTTP-only port 8080. The mTLS path is via the `keycloak-mtls-proxy` sidecar
+  on `:8443` (used by UC2-Hardened — see `docs/agentic-ai.md` § UC2-Hardened).
+- **Do not** make the mTLS proxy send `X-Forwarded-Proto: https` to Keycloak.
+  With `KC_PROXY_HEADERS=xforwarded` set, Keycloak would derive `iss` from
+  that header and emit `https://localhost:8080/realms/demo`, which
+  resource-server and mcp-service (configured with `KEYCLOAK_ISSUER=http://...`)
+  would reject. The proxy sets only `Host` and `X-Forwarded-For`.
 - **Do not** persist secrets in the repo. The demo's "secrets"
   (`demo-client-secret`, `ai-agent-secret-secret`, etc.) are *intentional*
   test fixtures, but never add real keys/tokens/passwords.
@@ -352,9 +363,10 @@ and any other `docker exec` with absolute Unix paths.
 - **Do not** introduce new ports without considering the host's existing
   port allocations. Active ports: 5000 (client-app), 8001 (resource-server),
   8002 (spiffe-service), 8003 (mcp-service), 8080 (Keycloak), 9000
-  (Keycloak management), 9001/9002/9003/9004 (agents UC1–UC4), 5432
-  (Postgres). Reserved for UC3b roadmap: 8443 (mTLS proxy), 9005
-  (cert-mtls agent).
+  (Keycloak management), 8443 (keycloak-mtls-proxy, used by UC2-Hardened),
+  9001/9002/9003/9004 (agents UC1–UC4), 9005 (agent-spiffe-mtls,
+  UC2-Hardened), 5432 (Postgres).  UC3b (deferred roadmap) would need to
+  pick new ports — the 8443/9005 originally reserved for it are now in use.
 
 ## When in doubt
 

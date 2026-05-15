@@ -490,8 +490,8 @@
       <p class="text-muted small mb-0">
         An AI agent (Python container running the Anthropic SDK) authenticates to Keycloak,
         opens a real <strong>MCP Streamable HTTP</strong> session to a protected MCP server,
-        and runs a Claude tool-use loop. Four patterns are demonstrated:
-        three service-principal authentication mechanisms (UC1&ndash;UC3a) and
+        and runs a Claude tool-use loop. Five patterns are demonstrated:
+        four service-principal authentication mechanisms (UC1, UC2, UC2-Hardened, UC3a) and
         one user-delegated flow (UC4) with full custody chain.
       </p>
     </div>
@@ -543,6 +543,30 @@
           SPIFFE-ID → JWT-SVID → priv_key_jwt → token
         </div>
         <a href="/agentic/spiffe" class="btn btn-success w-100 mt-auto">
+          <i class="bi bi-play-circle me-1"></i>Run Agent
+        </a>
+      </div>
+    </div>
+  </div>
+
+  {# UC2-Hardened — SPIFFE + mTLS #}
+  <div class="col-md-6 col-lg-4">
+    <div class="card flow-card shadow-sm border-start border-4 border-danger h-100">
+      <div class="card-body d-flex flex-column">
+        <div class="d-flex align-items-center mb-2">
+          <i class="bi bi-shield-lock-fill text-danger me-2" style="font-size:1.5rem"></i>
+          <h6 class="mb-0">UC2-Hardened &mdash; SPIFFE + mTLS</h6>
+        </div>
+        <span class="badge bg-danger mb-2 align-self-start">RFC 8705 · cert-bound</span>
+        <p class="card-text text-muted small mb-3">
+          Production-grade SPIFFE. The X.509-SVID is presented in the TLS handshake;
+          a sidecar validates the chain against the SPIRE bundle.  Token bound via
+          <code>cnf.x5t#S256</code> &mdash; replay-proof.
+        </p>
+        <div class="bg-light rounded p-2 small font-monospace mb-3">
+          X.509-SVID → mTLS → cert-bound token
+        </div>
+        <a href="/agentic/spiffe-mtls" class="btn btn-danger w-100 mt-auto">
           <i class="bi bi-play-circle me-1"></i>Run Agent
         </a>
       </div>

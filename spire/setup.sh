@@ -69,4 +69,37 @@ echo "=== Creating workload entry for ai-agent-spiffe ==="
   -ttl        3600 2>&1 | grep -v "^$" || true
 echo "  ✓ ai-agent-spiffe entry created"
 
+# selector unix:uid:1001 → ai-agent-spiffe-mtls (UC2-Hardened).  Distinct UID
+# from agent-spiffe (1000), spiffe-service (0), and keycloak-mtls-proxy (1002)
+# so the SPIRE unix workload attestor can tell them apart at the socket peer's
+# UID alone — see CLAUDE.md "SPIRE selectors must be distinct" gotcha.
+echo "=== Creating workload entry for ai-agent-spiffe-mtls ==="
+# -dns injects a DNS SAN and (SPIRE behaviour) makes the first DNS SAN the
+# cert's Subject CN.  Without it the SVID has Subject=O=SPIRE,C=US with no
+# CN — making it indistinguishable from any other workload's cert via
+# Subject-DN matching alone (which is what Keycloak client-x509 supports).
+"$SPIRE_SERVER" entry create \
+  -socketPath "$SOCKET" \
+  -parentID   "$AGENT_SPIFFE_ID" \
+  -spiffeID   "spiffe://${TRUST_DOMAIN}/ai-agent-spiffe-mtls" \
+  -selector   unix:uid:1001 \
+  -dns        ai-agent-spiffe-mtls \
+  -ttl        3600 2>&1 | grep -v "^$" || true
+echo "  ✓ ai-agent-spiffe-mtls entry created"
+
+# selector unix:uid:1002 → keycloak-mtls-proxy (UC2-Hardened sidecar).  The
+# proxy uses its own X.509-SVID as the HTTPS server cert and the trust-domain
+# bundle (delivered alongside the SVID) as the ssl_client_certificate trust
+# anchor for validating incoming mTLS clients.
+echo "=== Creating workload entry for keycloak-mtls-proxy ==="
+"$SPIRE_SERVER" entry create \
+  -socketPath "$SOCKET" \
+  -parentID   "$AGENT_SPIFFE_ID" \
+  -spiffeID   "spiffe://${TRUST_DOMAIN}/keycloak-mtls-proxy" \
+  -selector   unix:uid:1002 \
+  -dns        keycloak-mtls-proxy \
+  -dns        localhost \
+  -ttl        3600 2>&1 | grep -v "^$" || true
+echo "  ✓ keycloak-mtls-proxy entry created"
+
 echo "=== SPIRE init complete ==="

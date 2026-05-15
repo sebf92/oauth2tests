@@ -35,7 +35,21 @@ services:
       KC_LOG_LEVEL: INFO
       # Expose /health/ready so the Docker healthcheck works
       KC_HEALTH_ENABLED: "true"
-    command: start-dev --import-realm
+      # Trust X-Forwarded-* headers from the in-network mTLS proxy
+      # (keycloak-mtls-proxy → UC2-Hardened).  Direct :8080 requests still work
+      # for every other demo since they don't send these headers.
+      KC_PROXY_HEADERS: xforwarded
+    # SPI options that configure how Keycloak reads the verified client cert
+    # forwarded by the mTLS proxy MUST be passed as CLI flags.  Env-var form
+    # (KC_SPI_*) is flagged as "legacy" in Keycloak 26 and silently no-ops the
+    # build-time options the nginx provider needs.
+    command:
+      - start-dev
+      - --import-realm
+      - --spi-x509cert-lookup-provider=nginx
+      - --spi-x509cert-lookup-nginx-ssl-client-cert=ssl-client-cert
+      - --spi-x509cert-lookup-nginx-ssl-cert-chain-prefix=ssl-client-cert-chain
+      - --spi-x509cert-lookup-nginx-certificate-chain-length=2
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
     ports:
@@ -122,6 +136,7 @@ services:
       AGENT_SPIFFE_URL: http://agent-spiffe:9002
       AGENT_CERT_URL: http://agent-cert:9003
       AGENT_DELEGATED_URL: http://agent-delegated:9004
+      AGENT_SPIFFE_MTLS_URL: http://agent-spiffe-mtls:9005
       REDIRECT_URI: http://localhost:5000/auth/callback
       SECRET_KEY: change-this-secret-key-in-production-abc123
       FLASK_ENV: development
@@ -389,6 +404,65 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+    networks:
+      - oauth2-net
+
+  # ── keycloak-mtls-proxy (UC2-Hardened) ──────────────────────────────────────
+  # nginx sidecar that terminates mTLS in front of Keycloak.  It is itself a
+  # SPIRE workload (UID 1002 → spiffe://demo.local/keycloak-mtls-proxy) and
+  # fetches its server cert + the trust-domain bundle from SPIRE at startup.
+  # Validated client certs are forwarded to Keycloak via the `ssl-client-cert`
+  # header — Keycloak's KC_SPI_X509CERT_LOOKUP_PROVIDER=nginx reads them there.
+  keycloak-mtls-proxy:
+    build:
+      context: ./keycloak-mtls-proxy
+      dockerfile: Dockerfile
+    container_name: oauth2-keycloak-mtls-proxy
+    # Same PID-namespace trick used by every other SPIRE workload: required
+    # by the unix workload attestor to see this container's UID from /proc.
+    pid: "service:spire-agent"
+    volumes:
+      - spire-agent-socket:/tmp/spire-agent:ro
+    ports:
+      - "8443:8443"
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    networks:
+      - oauth2-net
+
+  # ── AI Agent (UC2-Hardened) — SPIFFE + mTLS (RFC 8705) → MCP ────────────────
+  # Authenticates by PRESENTING its X.509-SVID during the TLS handshake to the
+  # mTLS proxy (no client_assertion, no client_secret).  The proxy validates the
+  # cert chain against the SPIRE bundle; Keycloak then issues an access token
+  # bound to that cert via cnf.x5t#S256.
+  agent-spiffe-mtls:
+    build:
+      context: ./ai-agents/agent-spiffe-mtls
+      dockerfile: Dockerfile
+    container_name: oauth2-agent-spiffe-mtls
+    pid: "service:spire-agent"
+    environment:
+      SPIFFE_ENDPOINT_SOCKET: "unix:///tmp/spire-agent/public/api.sock"
+      SPIFFE_TRUST_DOMAIN: demo.local
+      KEYCLOAK_MTLS_TOKEN_URL: "https://keycloak-mtls-proxy:8443/realms/demo/protocol/openid-connect/token"
+      AGENT_CLIENT_ID: ai-agent-spiffe-mtls
+      MCP_SERVER_URL: http://mcp-service:8003/mcp
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+    volumes:
+      - spire-agent-socket:/tmp/spire-agent:ro
+    ports:
+      - "9005:9005"
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+      keycloak-mtls-proxy:
+        condition: service_started
+      mcp-service:
+        condition: service_started
     networks:
       - oauth2-net
 

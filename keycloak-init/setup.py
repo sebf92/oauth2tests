@@ -608,6 +608,89 @@ def ensure_ai_agent_cert_client(token: str) -> None:
     print(f"  ai-agent-cert client     id = {cid} (created with private_key_jwt)")
 
 
+def ensure_ai_agent_spiffe_mtls_client(token: str) -> None:
+    """Ensure the ai-agent-spiffe-mtls client (UC2-Hardened) exists.
+
+    Auth path is RFC 8705 mTLS:
+      • Keycloak runs with --spi-x509cert-lookup-provider=nginx so it reads
+        the verified client cert from the `ssl-client-cert` HTTP header set
+        by the keycloak-mtls-proxy sidecar.
+      • clientAuthenticatorType=client-x509 tells Keycloak to look up the
+        client based on that header's cert.
+      • x509.subjectdn — regex matching the Subject DN of any SPIRE-issued
+        X.509-SVID.  SPIRE produces certs with O=SPIFFE (and an empty CN);
+        the SPIFFE-ID-level identity is in the URI SAN.  Matching only on
+        the Subject DN means any workload in this trust domain could in
+        principle authenticate as this client; the SAN-URI-level check is
+        documented as a follow-up (would require a Keycloak SPI or
+        openresty+Lua in the proxy).
+      • tls.client.certificate.bound.access.tokens=true — the RFC 8705
+        "killer feature": every issued access token carries cnf.x5t#S256,
+        binding it to the cert that opened the TLS handshake.  A stolen
+        token cannot be replayed without the matching private key.
+
+    Idempotent: creates the client if missing, otherwise re-applies the
+    important attributes so a partially-configured client gets fixed up.
+    """
+    h    = {"Authorization": f"Bearer {token}"}
+    base = f"{KC_URL}/admin/realms/{REALM}"
+
+    desired_attrs = {
+        # Regex against the Subject DN parsed from the X.509-SVID.  SPIRE puts
+        # the workload's first DNS SAN into CN, so we get a stable, identity-
+        # specific CN to match on (set via -dns ai-agent-spiffe-mtls in
+        # spire/setup.sh).  The regex anchors on that CN regardless of where
+        # it appears in the DN serialisation.
+        "x509.subjectdn":                              "(.*,)?CN=ai-agent-spiffe-mtls(,.*)?",
+        "x509.allow.regex.pattern.comparison":         "true",
+        # RFC 8705 §3 — issue cert-bound tokens (cnf.x5t#S256).  This is the
+        # whole point of mTLS vs RFC 7523: stolen tokens are useless to a
+        # replayer without the private key behind the original TLS cert.
+        "tls.client.certificate.bound.access.tokens":  "true",
+    }
+
+    existing = _get(f"{base}/clients", h, params={"clientId": "ai-agent-spiffe-mtls"}).json()
+    if existing:
+        client    = existing[0]
+        client_id = client["id"]
+        attrs     = client.get("attributes") or {}
+        needs_update = (
+            client.get("clientAuthenticatorType") != "client-x509"
+            or any(attrs.get(k) != v for k, v in desired_attrs.items())
+        )
+        if needs_update:
+            client["clientAuthenticatorType"] = "client-x509"
+            attrs.update(desired_attrs)
+            client["attributes"] = attrs
+            _put(f"{base}/clients/{client_id}", h, json=client)
+            print(f"  ai-agent-spiffe-mtls       id = {client_id} (migrated to client-x509)")
+        else:
+            print(f"  ai-agent-spiffe-mtls       id = {client_id} (already configured)")
+        return
+
+    r = httpx.post(
+        f"{base}/clients",
+        headers=h,
+        json={
+            "clientId":                  "ai-agent-spiffe-mtls",
+            "enabled":                   True,
+            "publicClient":              False,
+            "clientAuthenticatorType":   "client-x509",
+            "serviceAccountsEnabled":    True,
+            "standardFlowEnabled":       False,
+            "directAccessGrantsEnabled": False,
+            "protocol":                  "openid-connect",
+            "defaultClientScopes":       ["web-origins", "acr", "profile", "email"],
+            "optionalClientScopes":      ["roles"],
+            "attributes":                desired_attrs,
+        },
+        timeout=10,
+    )
+    r.raise_for_status()
+    cid = r.headers["Location"].rstrip("/").split("/")[-1]
+    print(f"  ai-agent-spiffe-mtls       id = {cid} (created with client-x509)")
+
+
 def ensure_ai_agent_delegated_client(token: str) -> None:
     """Ensure the ai-agent-delegated client exists (UC4 — user-delegated agent).
 
@@ -806,6 +889,7 @@ def main() -> None:
     ensure_mcp_user_role(token)
     ensure_ai_agent_secret_client(token)
     ensure_ai_agent_spiffe_client(token)
+    ensure_ai_agent_spiffe_mtls_client(token)
     ensure_ai_agent_cert_client(token)
     ensure_ai_agent_delegated_client(token)
     ensure_delegated_audience_mapper_on_demo_client(token)
@@ -816,14 +900,14 @@ def main() -> None:
     mcp_scope_id = ensure_mcp_client_scope(token)
     # UC1/UC2/UC3a — service-principal agents.  Need both the scope (so the agent
     # can request scope=mcp) and the mcp-user role on the service account.
-    for client_id_str in ("ai-agent-secret", "ai-agent-spiffe", "ai-agent-cert"):
+    for client_id_str in ("ai-agent-secret", "ai-agent-spiffe", "ai-agent-spiffe-mtls", "ai-agent-cert"):
         ensure_mcp_scope_on_client(token, client_id_str, mcp_scope_id)
         ensure_mcp_role_on_service_account(token, client_id_str)
     # UC4 — user-delegated agent.  Need the scope so the exchange can request
     # scope=mcp, but NO role on the service account: the resulting token's
     # identity is the user (sub=alice), not the agent's service account.
     ensure_mcp_scope_on_client(token, "ai-agent-delegated", mcp_scope_id)
-    print("\n✓ Agentic AI (UC1 + UC2 + UC3a + UC4) setup complete — all four agents can access MCP!")
+    print("\n✓ Agentic AI (UC1 + UC2 + UC2-Hardened + UC3a + UC4) setup complete — all five agents can access MCP!")
 
 
 if __name__ == "__main__":

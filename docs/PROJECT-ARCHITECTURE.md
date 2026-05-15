@@ -16,10 +16,12 @@ graph TB
         H8002["localhost:8002"]
         H8003["localhost:8003"]
         H8080["localhost:8080"]
+        H8443["localhost:8443"]
         H9001["localhost:9001"]
         H9002["localhost:9002"]
         H9003["localhost:9003"]
         H9004["localhost:9004"]
+        H9005["localhost:9005"]
     end
 
     subgraph Net["Docker network — oauth2-net"]
@@ -28,11 +30,13 @@ graph TB
         SS[spiffe-service :8002<br/>FastAPI]
         MCP[mcp-service :8003<br/>FastAPI + FastMCP]
         KC[keycloak :8080 / :9000<br/>26.6.1]
+        MP[keycloak-mtls-proxy :8443<br/>nginx + SPIRE]
         PG[postgres :5432<br/>16-alpine]
         SV[spire-server :8081<br/>1.10.0]
         SA[spire-agent<br/>1.10.0]
         AS[agent-secret :9001<br/>UC1]
         AP[agent-spiffe :9002<br/>UC2]
+        APM[agent-spiffe-mtls :9005<br/>UC2-Hardened]
         AC[agent-cert :9003<br/>UC3a]
         AD[agent-delegated :9004<br/>UC4]
 
@@ -48,16 +52,19 @@ graph TB
     H8002 -.- SS
     H8003 -.- MCP
     H8080 -.- KC
+    H8443 -.- MP
     H9001 -.- AS
     H9002 -.- AP
     H9003 -.- AC
     H9004 -.- AD
+    H9005 -.- APM
 
     CA --> KC
     CA --> RS
     CA --> SS
     CA --> AS
     CA --> AP
+    CA --> APM
     CA --> AC
     CA -- "user_access_token" --> AD
 
@@ -70,6 +77,11 @@ graph TB
     AP --> KC
     AP --> MCP
     AP --> SA
+    APM -- "mTLS (X.509-SVID)" --> MP
+    MP -- "HTTP + ssl-client-cert" --> KC
+    APM --> MCP
+    APM --> SA
+    MP --> SA
     AC --> KC
     AC --> MCP
     AD -- "RFC 8693 exchange" --> KC
@@ -140,7 +152,7 @@ agents are pull-based JWKS fetches Keycloak makes to verify
   cookie, encrypted with `SECRET_KEY`).
 - **Major subsystems in `app.py`:**
   - 11 OAuth2 / OIDC flow routes (see `PROJECT-SPECIFICATION.md` §2)
-  - `/agentic` and `/agentic/<slug>` routes — proxy the four agent
+  - `/agentic` and `/agentic/<slug>` routes — proxy the five agent
     containers, render structured traces
   - `/docs` and `/docs/<slug>` routes — markdown rendering pipeline
   - `/api/call/<name>` — proxies to the resource server
@@ -150,7 +162,7 @@ agents are pull-based JWKS fetches Keycloak makes to verify
   - `KEYCLOAK_EXTERNAL_URL=http://localhost:8080` (`KC_EXT`)
   - `KEYCLOAK_INTERNAL_URL=http://keycloak:8080` (`KC_INT`)
   - One pair of `*_CLIENT_ID` + `*_CLIENT_SECRET` per Keycloak client used
-  - `AGENT_{SECRET,SPIFFE,CERT}_URL` — internal URLs of the agentic AI agents
+  - `AGENT_{SECRET,SPIFFE,SPIFFE_MTLS,CERT,DELEGATED}_URL` — internal URLs of the agentic AI agents
   - `MCP_SERVICE_URL` — for display in the agentic AI section
   - `DOCS_DIR=/app/docs` (bound from host `./docs:/app/docs:ro`)
 
@@ -196,6 +208,12 @@ agents are pull-based JWKS fetches Keycloak makes to verify
 - **Current entries created:**
   - `spiffe://demo.local/spiffe-service` selector `unix:uid:0`
   - `spiffe://demo.local/ai-agent-spiffe` selector `unix:uid:1000`
+  - `spiffe://demo.local/ai-agent-spiffe-mtls` selector `unix:uid:1001`
+    (+ DNS SAN `ai-agent-spiffe-mtls` so the cert gets a CN — required for
+    Keycloak's `client-x509` Subject-DN matching, see `docs/agentic-ai.md`
+    § UC2-Hardened)
+  - `spiffe://demo.local/keycloak-mtls-proxy` selector `unix:uid:1002`
+    (+ DNS SAN `keycloak-mtls-proxy` and `localhost` for the HTTPS server cert)
 
 ### `spire-agent` (custom, `spire/agent-wrapper/Dockerfile`)
 - **Role:** SPIFFE workload attestor. Issues SVIDs via the Workload API unix
@@ -204,7 +222,7 @@ agents are pull-based JWKS fetches Keycloak makes to verify
   statically-compiled binary into Alpine for a usable runtime.
 - **Workload API socket:** `/tmp/spire-agent/public/api.sock`, exposed via
   the `spire-agent-socket` named volume to consumers (`spiffe-service`,
-  `agent-spiffe`).
+  `agent-spiffe`, `agent-spiffe-mtls`, `keycloak-mtls-proxy`).
 
 ### `mcp-service` (custom, `mcp-service/Dockerfile`)
 - **Role:** OAuth-protected Model Context Protocol server on :8003. Real
@@ -251,6 +269,37 @@ agents are pull-based JWKS fetches Keycloak makes to verify
 - **Runs as UID 1000** (Dockerfile `useradd -u 1000`); shares PID namespace
   with `spire-agent` (compose `pid: "service:spire-agent"`).
 
+### `agent-spiffe-mtls` (custom, `ai-agents/agent-spiffe-mtls/Dockerfile`)
+- **Role:** UC2-Hardened demo agent on :9005. Same SPIFFE attestation as
+  UC2, but the X.509-SVID itself is the credential — no in-memory key,
+  no `client_assertion`.
+- **Auth path:** SPIRE Workload API `fetch_x509_svids()` → write SVID to
+  temp files → open mTLS connection to `keycloak-mtls-proxy:8443` using
+  the SVID as the client certificate → receive cert-bound access token
+  (`cnf.x5t#S256`). Standard: RFC 8705.
+- **Runs as UID 1001** (distinct from UC2's 1000, `spiffe-service`'s 0,
+  and the proxy's 1002 — SPIRE workload attestation discriminates on UID).
+- **Reads:** `spire-agent-socket:/tmp/spire-agent:ro`.
+- **No JWKS endpoint** (the cert is the credential; nothing for Keycloak to
+  fetch).
+
+### `keycloak-mtls-proxy` (custom, `keycloak-mtls-proxy/Dockerfile`)
+- **Role:** nginx sidecar on :8443 that terminates mTLS in front of
+  Keycloak's token endpoint. Used exclusively by UC2-Hardened. Self-attested
+  via SPIRE (`spiffe://demo.local/keycloak-mtls-proxy`, UID 1002).
+- **Server cert:** the proxy's own X.509-SVID, fetched at startup via
+  `spire-agent api fetch x509` (multi-stage Dockerfile copies the binary
+  from the official spire-agent image).
+- **Client cert validation:** against the SPIRE trust-domain bundle
+  (`bundle.0.pem`), also written by the Workload API call.
+- **Forwarding:** verified client certs are passed to Keycloak as
+  URL-encoded PEM in the `ssl-client-cert` HTTP header. The Keycloak
+  `x509cert-lookup=nginx` provider reads them and matches the Subject DN
+  against `ai-agent-spiffe-mtls`'s configured regex.
+- **Does NOT** set `X-Forwarded-Proto: https` — this would make Keycloak
+  emit tokens with `iss: https://localhost:8080/realms/demo`, breaking the
+  `KEYCLOAK_ISSUER=http://...` expectation of resource-server + mcp-service.
+
 ### `agent-cert` (custom, `ai-agents/agent-cert/Dockerfile`)
 - **Role:** UC3a demo agent on :9003.
 - **Auth path:** load `agent.key` + `agent.crt` from `agent-cert-pki`
@@ -291,7 +340,7 @@ agents are pull-based JWKS fetches Keycloak makes to verify
 |---|---|---|---|
 | `postgres_data` | postgres | postgres | Keycloak database |
 | `spire-server-socket` | spire-server | spire-init (rw) | Server admin socket for entry creation |
-| `spire-agent-socket` | spire-agent | spiffe-service (ro), agent-spiffe (ro) | Workload API socket |
+| `spire-agent-socket` | spire-agent | spiffe-service (ro), agent-spiffe (ro), agent-spiffe-mtls (ro), keycloak-mtls-proxy (ro) | Workload API socket |
 | `spire-tokens` | spire-init (rw) | spire-agent (ro) | Join token hand-off |
 | `agent-cert-pki` | cert-init (rw) | agent-cert (ro) | UC3a CA + agent cert + key |
 
@@ -330,6 +379,11 @@ are summarised here:
               │   • spiffe-service       (SPIFFE flow 6 demo)                  │
               │   • ai-agent-spiffe      (Agentic AI UC2)                      │
               │   • ai-agent-cert        (Agentic AI UC3a)                     │
+              ├────────────────────────────────────────────────────────────────┤
+              │ mTLS clients (client-x509 + x509cert-lookup=nginx)             │
+              │   • ai-agent-spiffe-mtls (Agentic AI UC2-Hardened, RFC 8705)   │
+              │     — Subject DN matched against (.*,)?CN=ai-agent-spiffe-mtls │
+              │     — issues cert-bound tokens (cnf.x5t#S256)                  │
               └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -364,6 +418,10 @@ The Keycloak realm-level configuration provides:
    - `mcp-service` (depends on `keycloak`)
    - `agent-secret`, `agent-spiffe`, `agent-cert`, `agent-delegated`
      (depend on `mcp-service`)
+   - `keycloak-mtls-proxy` (depends on `spire-agent` healthy, `keycloak`
+     healthy) — fetches its SVID + bundle at startup, then starts nginx
+   - `agent-spiffe-mtls` (depends on `spire-agent`, `keycloak-mtls-proxy`,
+     `mcp-service`)
    - `client-app` (depends on `keycloak`, `resource-server`)
 
 ### Warm start (subsequent `docker compose up -d`)
@@ -437,6 +495,31 @@ agent-cert → load /pki/agent.{key,crt} at startup
           ← Keycloak: GET http://agent-cert:9003/jwks (which embeds x5c + x5t#S256)
           ← access_token
           (rest identical to UC1)
+```
+
+### UC2-Hardened uses the X.509-SVID as the TLS credential (no client_assertion):
+
+```
+agent-spiffe-mtls → spire workload API: fetch_x509_svids()
+                 ← X.509-SVID (cert chain + private key + bundle)
+                 → write SVID to temp files for httpx cert= param
+                 → mTLS POST https://keycloak-mtls-proxy:8443/realms/demo/.../token
+                       client cert in TLS handshake (RFC 8705)
+                       no client_assertion, no client_secret
+keycloak-mtls-proxy → nginx ssl_verify_client on
+                       validates chain against /etc/nginx/tls/spire-bundle.crt
+                       (= SPIRE trust-domain bundle, fetched at proxy startup)
+                   → forward to http://keycloak:8080 with:
+                       ssl-client-cert: <URL-encoded PEM>
+                       (Host: localhost:8080, X-Forwarded-For only —
+                        deliberately NO X-Forwarded-Proto)
+Keycloak           → KC_SPI_X509CERT_LOOKUP_PROVIDER=nginx reads the header
+                   → clientAuthenticatorType=client-x509 matches Subject DN
+                       against (.*,)?CN=ai-agent-spiffe-mtls(,.*)?
+                   → tls.client.certificate.bound.access.tokens=true
+                       adds cnf.x5t#S256 to the issued token
+                   ← access_token with cnf.x5t#S256
+                 (rest identical to UC1)
 ```
 
 ### UC4 inverts the identity model — the user is the principal:

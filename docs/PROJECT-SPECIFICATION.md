@@ -179,7 +179,48 @@ The Flask client-app proxies `/agentic/<slug>` to the corresponding agent's
   separate in-memory EC key signs the RFC 7523 `client_assertion`.
 - **Trace fields:** `svid` + `auth` (with `assertion_claims`)
 
-### 3.3 UC3a — X.509 Certificate → MCP
+### 3.3 UC2-Hardened — SPIFFE + mTLS (RFC 8705) → MCP
+
+- **Container:** `agent-spiffe-mtls` :9005
+- **Proxy container:** `keycloak-mtls-proxy` :8443 (nginx, in front of Keycloak)
+- **Keycloak client:** `ai-agent-spiffe-mtls`
+  (`clientAuthenticatorType=client-x509`,
+  `x509.subjectdn=(.*,)?CN=ai-agent-spiffe-mtls(,.*)?`,
+  `tls.client.certificate.bound.access.tokens=true`)
+- **Keycloak runtime flags:** `--spi-x509cert-lookup-provider=nginx`
+  `--spi-x509cert-lookup-nginx-ssl-client-cert=ssl-client-cert`
+- **SPIRE workload entries:**
+  - `spiffe://demo.local/ai-agent-spiffe-mtls` selector `unix:uid:1001` +
+    `-dns ai-agent-spiffe-mtls` (the DNS SAN becomes the cert CN — needed
+    by Keycloak's Subject-DN matcher since the canonical SPIFFE ID lives in
+    the URI SAN, which Keycloak doesn't consult)
+  - `spiffe://demo.local/keycloak-mtls-proxy` selector `unix:uid:1002` +
+    `-dns keycloak-mtls-proxy -dns localhost` (the proxy's own HTTPS server
+    cert)
+- **Container constraints:**
+  - Agent runs as UID 1001 (Dockerfile `useradd -u 1001`)
+  - Proxy runs as UID 1002 (via `su-exec spireworker` in entrypoint when
+    calling SPIRE)
+  - Both share PID namespace with `spire-agent`
+  - Both mount `spire-agent-socket` read-only
+- **Auth:** SPIRE Workload API issues an X.509-SVID; the agent presents it
+  in the mTLS handshake to the proxy.  nginx validates the chain against
+  the SPIRE trust-domain bundle (fetched at proxy startup via
+  `spire-agent api fetch x509`) and forwards the cert to Keycloak in the
+  `ssl-client-cert` header.  Keycloak's `client-x509` authenticator matches
+  the Subject DN and returns an access token bound to the cert via
+  `cnf.x5t#S256`.
+- **Trace fields:** `svid` (with cert subject, issuer, SAN URIs, serial,
+  validity, SHA-256 thumbprint) + `auth` (with `cert_bound: bool` and
+  `cnf_x5t_s256: str` — the binding from RFC 8705 §3.1)
+- **Critical gotcha — no X-Forwarded-Proto from the proxy.**  With
+  `KC_PROXY_HEADERS=xforwarded` on Keycloak, an `X-Forwarded-Proto: https`
+  header would cause Keycloak to emit
+  `iss: https://localhost:8080/realms/demo`, which `resource-server` and
+  `mcp-service` (configured with `KEYCLOAK_ISSUER=http://...`) would
+  reject.  The nginx config deliberately omits that header.
+
+### 3.4 UC3a — X.509 Certificate → MCP
 
 - **Container:** `agent-cert` :9003
 - **Keycloak client:** `ai-agent-cert`
@@ -198,7 +239,7 @@ The Flask client-app proxies `/agentic/<slug>` to the corresponding agent's
 - **Trace fields:** `cert` + `auth` (with `assertion_header` showing
   `x5t#S256`, `assertion_claims`)
 
-### 3.4 UC4 — User-Delegated (OBO + Rescope) → MCP
+### 3.5 UC4 — User-Delegated (OBO + Rescope) → MCP
 
 - **Container:** `agent-delegated` :9004
 - **Slug (URL path):** `user-delegated-rescope`
@@ -212,7 +253,7 @@ The Flask client-app proxies `/agentic/<slug>` to the corresponding agent's
   - `mcp` scope assigned to `ai-agent-delegated` as optional
   - **No `mcp-user` role on the service account** — the resulting token's
     identity is the user, not the service account
-- **Contract differs from UC1/UC2/UC3a:**
+- **Contract differs from UC1/UC2/UC2-Hardened/UC3a:**
   - `POST /run` body MUST contain `{"user_access_token": "<T0>"}` (validated
     via pydantic — empty body returns 422)
   - `GET /info` returns `requires_user_token: true`
@@ -231,7 +272,7 @@ The Flask client-app proxies `/agentic/<slug>` to the corresponding agent's
   `td["access_token"]` as the `user_access_token` body field. Unauthenticated
   visitors are redirected to `/auth/authorization-code`.
 
-### 3.5 Agent trace contract (AgentRun JSON)
+### 3.6 Agent trace contract (AgentRun JSON)
 
 Every agent's `/run` returns a dataclass-serialised JSON object with this
 shape (fields are use-case-dependent; unused ones are `null`):
@@ -243,9 +284,20 @@ shape (fields are use-case-dependent; unused ones are `null`):
   "model":        "claude-haiku-4-5-20251001" | "deterministic-mock",
   "task":         "<the task given to the agent>",
 
-  # Optional — UC2 only
-  "svid":         { "success": bool, "spiffe_id": str, "socket": str,
-                    "header": dict, "payload": dict, "error": str|null },
+  # Optional — UC2 (JWT-SVID claims only) and UC2-Hardened (X.509-SVID metadata)
+  "svid": {
+    # UC2 shape:
+    "success": bool, "spiffe_id": str, "socket": str,
+    "header": dict, "payload": dict, "error": str|null,
+    # UC2-Hardened additional fields (X.509 cert metadata):
+    "cert_subject": str | null,
+    "cert_issuer":  str | null,
+    "cert_serial":  str | null,
+    "cert_not_before": str | null,
+    "cert_not_after":  str | null,
+    "cert_san_uris":   [str, ...],
+    "cert_sha256_fp":  str | null
+  },
 
   # Optional — UC3a only
   "cert":         { "success": bool,
@@ -267,7 +319,10 @@ shape (fields are use-case-dependent; unused ones are `null`):
     "token_claims":      dict | null,        # decoded
     "expires_in":        int | null,
     "assertion_header":  dict | null,        # UC2/UC3a only
-    "assertion_claims":  dict | null         # UC2/UC3a only
+    "assertion_claims":  dict | null,        # UC2/UC3a only
+    "proxy_url":         str | null,         # UC2-Hardened only
+    "cert_bound":        bool,               # UC2-Hardened: token has cnf.x5t#S256
+    "cnf_x5t_s256":      str | null          # UC2-Hardened: the binding value
   },
 
   "mcp": {
@@ -296,7 +351,7 @@ The Flask renderer (`client-app/templates/agentic_result.html`) is generic
 across this shape — adding fields requires extending only the agent's
 dataclass + the template.
 
-### 3.6 Agent task (shared across all four)
+### 3.7 Agent task (shared across all five)
 
 ```
 I have a $40 budget for a gift. Look at the product catalogue, pick the
@@ -308,7 +363,7 @@ product data.
 Each agent uses the same task so traces are comparable across UCs.
 Configurable via the `AGENT_TASK` env var on each agent container.
 
-### 3.7 Mock vs live mode
+### 3.8 Mock vs live mode
 
 Each agent checks `ANTHROPIC_API_KEY`:
 - **Live:** invokes `anthropic.Anthropic().messages.create(...)` in a
@@ -488,6 +543,7 @@ pattern).
 | `pkce-client` | — | **Yes** | Auth Code | `pkce.code.challenge.method=S256` |
 | `ai-agent-secret` | client-secret | No | Client Credentials | UC1 |
 | `ai-agent-spiffe` | **client-jwt** | No | Client Credentials | UC2, `jwks_url=http://agent-spiffe:9002/jwks` |
+| `ai-agent-spiffe-mtls` | **client-x509** | No | Client Credentials | UC2-Hardened, `x509.subjectdn=(.*,)?CN=ai-agent-spiffe-mtls(,.*)?`, `tls.client.certificate.bound.access.tokens=true` |
 | `ai-agent-cert` | **client-jwt** | No | Client Credentials | UC3a, `jwks_url=http://agent-cert:9003/jwks` |
 | `ai-agent-delegated` | client-secret | No | **Token Exchange** | UC4, `standard.token.exchange.enabled=true`, OBO + rescope |
 
@@ -500,8 +556,8 @@ The `mcp` client scope (created by `ensure_mcp_client_scope`):
   `included.custom.audience=mcp-service`, `access.token.claim=true`,
   `id.token.claim=false`
 
-Assigned as **optional** scope on `ai-agent-{secret,spiffe,cert}`. Agents
-must explicitly request `scope=mcp` in the token request.
+Assigned as **optional** scope on `ai-agent-{secret,spiffe,spiffe-mtls,cert,delegated}`.
+Agents must explicitly request `scope=mcp` in the token request.
 
 ---
 
@@ -561,13 +617,14 @@ ensure_pkce_client()
 ensure_mcp_user_role()
 ensure_ai_agent_secret_client()
 ensure_ai_agent_spiffe_client()
+ensure_ai_agent_spiffe_mtls_client()                     # UC2-Hardened (client-x509)
 ensure_ai_agent_cert_client()
 ensure_ai_agent_delegated_client()                       # UC4
 ensure_delegated_audience_mapper_on_demo_client()        # UC4
 setup_token_exchange()  # re-runs to pick up ai-agent-delegated's attribute
 mcp_scope_id = ensure_mcp_client_scope()
-# UC1/UC2/UC3a — service-principal agents need scope AND role on service account
-for cid in ("ai-agent-secret", "ai-agent-spiffe", "ai-agent-cert"):
+# UC1/UC2/UC2-Hardened/UC3a — service-principal agents need scope AND role on service account
+for cid in ("ai-agent-secret", "ai-agent-spiffe", "ai-agent-spiffe-mtls", "ai-agent-cert"):
     ensure_mcp_scope_on_client(token, cid, mcp_scope_id)
     ensure_mcp_role_on_service_account(token, cid)
 # UC4 — user-delegated agent needs scope only; sub is the user, not the service account
@@ -649,7 +706,9 @@ RFC 9449 §4.3: signature, `htm`, `htu`, `iat` (60s window),
 | `MCP_SERVICE_URL` | `http://mcp-service:8003` | Display only |
 | `AGENT_SECRET_URL` | `http://agent-secret:9001` | UC1 backend |
 | `AGENT_SPIFFE_URL` | `http://agent-spiffe:9002` | UC2 backend |
+| `AGENT_SPIFFE_MTLS_URL` | `http://agent-spiffe-mtls:9005` | UC2-Hardened backend |
 | `AGENT_CERT_URL` | `http://agent-cert:9003` | UC3a backend |
+| `AGENT_DELEGATED_URL` | `http://agent-delegated:9004` | UC4 backend |
 | `REDIRECT_URI` | `http://localhost:5000/auth/callback` | |
 | `SECRET_KEY` | dev-secret-key-… | Flask session cookie key |
 | `DOCS_DIR` | `/app/docs` | Bound from host `./docs` |

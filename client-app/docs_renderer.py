@@ -151,7 +151,7 @@ def _render_doc(filename: str):
         extensions=["tables", "fenced_code", "codehilite", "toc", "attr_list"],
         extension_configs={
             "codehilite": {"css_class": "highlight", "use_pygments": True},
-            "toc": {"title": "", "toc_depth": "2-3", "permalink": True,
+            "toc": {"title": "", "toc_depth": "2-2", "permalink": True,
                     "permalink_class": "toc-anchor", "permalink_title": "¶"},
         },
     )

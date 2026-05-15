@@ -6,10 +6,11 @@ A fully containerised environment to understand how **OAuth2**, **OIDC**, **JWT*
 - **Eleven OAuth2 / OIDC flows** demonstrated end-to-end, from browser login and
   device authorization through workload identity to proof-of-possession and token
   introspection.
-- **Four Agentic AI patterns** — three service-principal mechanisms (client
-  secret, SPIFFE attestation, X.509 certificate) and one user-delegated flow
-  (RFC 8693 OBO + scope narrowing) — each backed by a real Model Context Protocol
-  (MCP) server protected by Bearer JWT and the **Anthropic SDK** tool-use loop.
+- **Five Agentic AI patterns** — four service-principal mechanisms (client
+  secret, SPIFFE attestation, **SPIFFE + mTLS / RFC 8705**, X.509 certificate)
+  and one user-delegated flow (RFC 8693 OBO + scope narrowing) — each backed by
+  a real Model Context Protocol (MCP) server protected by Bearer JWT and the
+  **Anthropic SDK** tool-use loop.
 
 ---
 
@@ -60,14 +61,21 @@ Agentic AI stack (MCP-authenticated AI agents):
                                                 │         get_product_details│
                                                 └────────────▲───────────────┘
                                                              │ Authorization: Bearer
-   ┌──────────────────────────────────────────┬──────────────┴───────────────┐
-   │                                          │                              │
-┌──┴─────────────────┐  ┌──────────────────┐ ┌┴──────────────────┐ ┌─────────┴──────────┐
-│ agent-secret :9001 │  │ agent-spiffe     │ │ agent-cert :9003  │ │ agent-delegated    │
-│ UC1 ClientCreds    │  │ :9002 UC2 SPIFFE │ │ UC3a X.509 cert   │ │ :9004 UC4 OBO+     │
-│ (client_secret)    │  │ (priv_key_jwt)   │ │ (priv_key_jwt)    │ │ Rescope (user-      │
-│                    │  │                  │ │                   │ │ delegated)         │
-└────────────────────┘  └──────────────────┘ └───────────────────┘ └────────────────────┘
+   ┌──────────────────┬────────────────┬───────────────┬─────┴──────────┬────────────────┐
+   │                  │                │               │                │                │
+┌──┴──────────────┐ ┌─┴────────────┐ ┌─┴──────────┐ ┌──┴─────────────┐ ┌┴────────────────┐
+│ agent-secret    │ │ agent-spiffe │ │ agent-     │ │ agent-cert     │ │ agent-delegated │
+│ :9001           │ │ :9002        │ │ spiffe-    │ │ :9003          │ │ :9004           │
+│ UC1 ClientCreds │ │ UC2 SPIFFE   │ │ mtls :9005 │ │ UC3a X.509     │ │ UC4 OBO+Rescope │
+│ (client_secret) │ │ (priv_key_   │ │ UC2-       │ │ (priv_key_jwt) │ │ (user-delegated)│
+│                 │ │  jwt)        │ │ Hardened   │ │                │ │                 │
+│                 │ │              │ │ (mTLS/8705)│ │                │ │                 │
+└─────────────────┘ └──────────────┘ └─────┬──────┘ └────────────────┘ └─────────────────┘
+                                           │ mTLS  ┌──────────────────────────────┐
+                                           └─────▶│ keycloak-mtls-proxy :8443    │
+                                                  │ nginx — terminates mTLS,     │
+                                                  │ validates vs SPIRE CA bundle │
+                                                  └──────────────────────────────┘
    Each agent: Anthropic SDK tool-use loop  (mock fallback when ANTHROPIC_API_KEY unset)
 ```
 
@@ -82,7 +90,8 @@ Server-side containers talk to each other via the Docker network (`http://keyclo
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose v2)
-- Ports **8080**, **8001**, **8002**, and **5000** free on your machine
+- Ports **5000**, **8001**, **8002**, **8003**, **8080**, **8443**, **9000**,
+  **9001**–**9005** free on your machine
 
 ### 1 — Start the stack
 
@@ -133,12 +142,15 @@ docker compose ps
 1. Open http://localhost:5000/agentic
 2. Click **"Run Agent"** under **UC1 — Client Secret** to see a service-principal
    agent obtain a token and call MCP tools (no login needed)
-3. Click **UC2 SPIFFE** and **UC3a Certificate** to see the two zero-secret
-   patterns. Each renders the auth path, MCP discovery, and tool-use loop
-4. Log in as `alice`, then click **UC4 User-Delegated** → see the RFC 8693
+3. Click **UC2 SPIFFE** and **UC3a Certificate** to see two zero-secret patterns.
+   Each renders the auth path, MCP discovery, and tool-use loop
+4. Click **UC2-Hardened — SPIFFE + mTLS** to see the same SPIFFE identity used
+   as a TLS client certificate (RFC 8705). The issued token carries `cnf.x5t#S256`
+   — a cert-bound binding that makes a stolen token unreplayable
+5. Log in as `alice`, then click **UC4 User-Delegated** → see the RFC 8693
    exchange diff: `sub=alice` preserved, scope narrowed, full custody chain
    surfaced both in the UI and in `docker logs oauth2-mcp-service`
-5. Set `ANTHROPIC_API_KEY` in `.env` and restart agent containers to swap the
+6. Set `ANTHROPIC_API_KEY` in `.env` and restart agent containers to swap the
    mock loop for a real Claude tool-use loop
 
 ---
@@ -281,7 +293,7 @@ the access token still decodes locally but introspection returns `active: false`
 
 ## Agentic AI — Authenticated MCP Access
 
-Four patterns for AI agents accessing a protected **Model Context Protocol (MCP)** server.
+Five patterns for AI agents accessing a protected **Model Context Protocol (MCP)** server.
 The MCP server is real (official `mcp` Python SDK, Streamable HTTP transport) and the
 Anthropic SDK drives a Claude tool-use loop; falls back to a deterministic mock when
 `ANTHROPIC_API_KEY` is unset. See [docs/agentic-ai.md](docs/agentic-ai.md) for the deep dive.
@@ -304,6 +316,21 @@ SPIRE attests → in-memory EC key → RFC 7523 client_assertion → token → M
 The agent runs as UID 1000 and is attested by SPIRE (selector `unix:uid:1000`).
 An ephemeral EC key signs the `client_assertion`; Keycloak fetches the public
 key from `agent-spiffe:9002/jwks` to verify. Zero static secrets anywhere.
+
+### UC2-Hardened — SPIFFE + mTLS (RFC 8705)
+
+```
+SPIRE attests → X.509-SVID → mTLS handshake to nginx → Keycloak client-x509 → cert-bound token → MCP
+```
+
+Closes the cryptographic gap of UC2: the SVID issued by SPIRE is presented
+**as the TLS client certificate** to a `keycloak-mtls-proxy` sidecar (nginx on
+:8443). The proxy validates the chain against the SPIRE trust-domain bundle
+and forwards the verified cert to Keycloak via the `ssl-client-cert` header.
+Keycloak's `client-x509` authenticator matches the Subject DN and issues an
+access token bound to that exact cert via the `cnf.x5t#S256` claim — a stolen
+token cannot be replayed without the matching private key. The agent runs as
+UID 1001 and the proxy as UID 1002, both attested by SPIRE.
 
 ### UC3a — X.509 Certificate
 
@@ -557,14 +584,19 @@ oauth2sample/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── main.py                     # FastAPI + FastMCP + Bearer JWT auth
-├── ai-agents/                      # NEW — Four agentic AI demo containers
+├── ai-agents/                      # Five agentic AI demo containers
 │   ├── agent-secret/               # UC1 :9001  (Client Credentials)
 │   ├── agent-spiffe/               # UC2 :9002  (SPIRE → RFC 7523)
+│   ├── agent-spiffe-mtls/          # UC2-Hardened :9005 (SPIRE → RFC 8705 mTLS)
 │   ├── agent-cert/                 # UC3a :9003 (X.509 cert → RFC 7523)
 │   └── agent-delegated/            # UC4 :9004  (RFC 8693 OBO + Rescope)
-├── cert-init/                      # NEW — One-shot CA + cert generator for UC3a
+├── cert-init/                      # One-shot CA + cert generator for UC3a
 │   ├── Dockerfile
 │   └── setup.sh
+├── keycloak-mtls-proxy/            # nginx sidecar for UC2-Hardened (:8443)
+│   ├── Dockerfile
+│   ├── nginx.conf
+│   └── entrypoint.sh
 └── docs/
     ├── architecture.md             # Learner — system architecture
     ├── oauth2-flows.md             # Learner — all eleven OAuth2 flows

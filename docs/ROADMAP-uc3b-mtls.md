@@ -3,6 +3,28 @@
 > **Status:** deferred from v1. Not in the live demo. This document is a
 > self-contained implementation plan to pick up later.
 
+> **⚠ Superseded for the SPIFFE case by UC2-Hardened.** UC2-Hardened
+> (live, see [agentic-ai.md § UC2-Hardened](agentic-ai.md#uc2-hardened--spiffe--mtls-rfc-8705))
+> already implements the RFC 8705 mTLS pattern using a **SPIRE-issued X.509-SVID**
+> instead of a `cert-init`-issued long-lived cert. The `keycloak-mtls-proxy`
+> sidecar and the Keycloak `client-x509` authenticator are shared
+> infrastructure that UC3b can build on rather than duplicate.
+>
+> **Port conflict.** UC2-Hardened uses **:8443** for the mTLS proxy and
+> **:9005** for the agent (originally reserved for UC3b). A future UC3b
+> implementation should either:
+> - **Reuse the existing `keycloak-mtls-proxy`** by adding a second Keycloak
+>   client (`ai-agent-cert-mtls`) whose `x509.subjectdn` matches the
+>   `cert-init`-issued cert, and pick a free port for the agent (e.g. 9006),
+>   **or**
+> - **Stand up a second nginx proxy** on a different port (e.g. 8444) with
+>   `cert-init`'s CA as the trust anchor instead of SPIRE's bundle, for full
+>   isolation from the SPIFFE flow.
+>
+> The rest of this document describes the original standalone plan; treat
+> port references to 8443/9005 as needing reassignment if you decide to
+> implement UC3b alongside UC2-Hardened.
+
 UC3a (already shipped) uses a certificate's private key to sign an RFC 7523
 `client_assertion` JWT — the TLS connection itself is unauthenticated.
 UC3b would use the **certificate as the credential during the TLS handshake**
@@ -45,7 +67,7 @@ completeness.
 
 Today the entire stack runs on plain HTTP (`KC_HTTP_ENABLED=true`).
 Switching Keycloak to HTTPS would force every service (client-app,
-resource-server, spiffe-service, mcp-service, all four agentic AI agents,
+resource-server, spiffe-service, mcp-service, all five agentic AI agents,
 keycloak-init) to either trust a self-signed cert or disable verification. That is invasive
 and risks destabilising the eleven existing demos.
 
@@ -344,7 +366,7 @@ Recommended sequence (each step is independently testable):
    `curl --cert agent.crt --key agent.key --cacert ca.crt https://localhost:8443/realms/demo/.well-known/openid-configuration`.
    Expect 200 with the discovery doc.
 3. **Keycloak `KC_PROXY_HEADERS`** — restart Keycloak. Verify all existing
-   demos still work (run UC1, UC2, UC3a, UC4 once each).
+   demos still work (run UC1, UC2, UC2-Hardened, UC3a, UC4 once each).
 4. **New Keycloak client** — run keycloak-init. Verify `ai-agent-cert-mtls`
    exists with `clientAuthenticatorType=x509`.
 5. **Manual token request** — outside the agent code:
